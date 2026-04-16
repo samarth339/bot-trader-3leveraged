@@ -91,30 +91,59 @@ jobs:
           regime = latest.get("regime", "—")
           emoji  = EMOJI.get(regime, "❓")
 
+          # ── Portfolio P&L from state ──────────────────────────────
+          pnl = state.get("portfolio", {})
+          def fmt_money(v): return f"${abs(v):>9,.2f}"
+          def fmt_sign(v):  return "+" if v >= 0 else "-"
+
+          if pnl:
+              gain     = pnl.get("gain_loss", 0)
+              td_val   = pnl.get("today_change_val", 0)
+              pnl_rows = [
+                  f"| 💵 Starting Capital | ${pnl.get('start_value', 5000):,.2f} |",
+                  f"| 📊 Current Value    | ${pnl.get('current_value', 0):,.2f} |",
+                  f"| {'📈' if gain>=0 else '📉'} Total Return     | {fmt_sign(gain)}{fmt_money(gain)}  ({fmt_sign(gain)}{abs(pnl.get('pct_return',0)):.1f}%) |",
+                  f"| 📅 Today's Change   | {fmt_sign(td_val)}{fmt_money(td_val)}  ({fmt_sign(td_val)}{abs(pnl.get('today_change_pct',0)):.1f}%) |",
+                  f"| 🔝 Best Day         | +{pnl.get('best_day_pct',0):.1f}% |",
+                  f"| 🔻 Worst Day        | {pnl.get('worst_day_pct',0):.1f}% |",
+              ]
+          else:
+              pnl_rows = ["| — | P&L data not yet available |"]
+
           lines = [
               f"## {emoji} Trading Bot — Shadow Day {day}/30",
               f"",
+              f"### 💰 Portfolio Snapshot",
+              f"| | |",
+              f"|---|---|",
+          ] + pnl_rows + [
+              f"",
+              f"> Shadow mode — no real money invested",
+              f"",
+              f"---",
+              f"",
+              f"### 📡 Today's Signal",
               f"| Field | Value |",
               f"|---|---|",
               f"| Date | {latest.get('as_of_date', '—')} |",
-              f"| Regime | **{regime.upper()}** |",
-              f"| Action | {latest.get('action', '—')} |",
+              f"| Regime | **{emoji} {regime.upper()}** |",
+              f"| Action | `{latest.get('action', '—')}` |",
               f"| Allocation | {int(float(latest.get('weight_a',0.5))*100)}% A / {int(float(latest.get('weight_b',0.5))*100)}% B |",
               f"| QQQ (T-1) | ${float(latest.get('qqq_price',0)):.2f} |",
-              f"| VIX (raw) | {latest.get('vix_raw', '—')} |",
-              f"| VIX (smoothed) | {latest.get('vix_signal', '—')} |",
-              f"| % vs SMA | {latest.get('pct_vs_sma', '—')} |",
+              f"| % vs SMA-130 | {latest.get('pct_vs_sma', '—')}% |",
+              f"| VIX raw | {latest.get('vix_raw', '—')} |",
+              f"| VIX smoothed (5d) | {latest.get('vix_signal', '—')} |",
               f"",
-              f"### Regime Distribution ({day} days)",
-              f"| Regime | Days | % |",
+              f"### 📊 Regime Distribution ({day} days)",
+              f"| Regime | Days | Share |",
               f"|---|---|---|",
               f"| 🐂 Bull | {state.get('days_bull',0)} | {pct_b}% |",
               f"| ⚠️ Uncertain | {state.get('days_uncertain',0)} | {pct_u}% |",
               f"| 🔴 High-Vol | {state.get('days_high_vol',0)} | {pct_h}% |",
               f"",
-              f"Regime flips: **{state.get('regime_flips',0)}** &nbsp;|&nbsp; Alerts fired: **{state.get('total_alerts',0)}**",
+              f"Regime flips: **{state.get('regime_flips',0)}** &nbsp;|&nbsp; Alerts: **{state.get('total_alerts',0)}**",
               f"",
-              f"### Last 7 Signals",
+              f"### 🗓️ Last 7 Signals",
               f"| Date | Regime | Action | VIX | QQQ | Alloc |",
               f"|---|---|---|---|---|---|",
           ]
@@ -131,7 +160,7 @@ jobs:
                   f"| {int(wa*100)}/{int((1-wa)*100)} |"
               )
 
-          lines += ["", "> No trades placed — shadow observation only."]
+          lines += [""]
 
           with open(summary_file, "a") as f:
               f.write("\n".join(lines) + "\n")

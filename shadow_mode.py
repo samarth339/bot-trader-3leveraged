@@ -285,7 +285,72 @@ def send_alert_email(signal: dict, anomalies: list, day_number: int):
     return subject, body
 
 
-def send_daily_digest(signal: dict, state: dict, day_number: int, anomalies: list):
+def compute_shadow_pnl(state: dict) -> dict:
+    """
+    Run DualPortfolioBacktester over the full history, then normalize the equity
+    curve to $5,000 at the shadow start date and return P&L stats for the shadow
+    window only.  Returns {} silently on any error — non-fatal.
+    """
+    try:
+        from backtester.dual_portfolio import DualPortfolioBacktester
+        from strategies.long_only_guard_v2 import LongOnlyGuardV2
+        from config.settings import INITIAL_CAPITAL
+        from config.strategy_config import STRATEGY_A_CONFIG, STRATEGY_B_CONFIG, PORTFOLIO_DEFAULTS
+
+        DATA_DIR = ROOT / "data" / "processed"
+        tqqq = pd.read_csv(DATA_DIR / "TQQQ_full.csv", index_col=0, parse_dates=True)["Close"]
+        sqqq = pd.read_csv(DATA_DIR / "SQQQ_full.csv", index_col=0, parse_dates=True)["Close"]
+        qqq  = pd.read_csv(DATA_DIR / "QQQ_full.csv",  index_col=0, parse_dates=True)["Close"]
+        vix  = pd.read_csv(DATA_DIR / "VIX_full.csv",  index_col=0, parse_dates=True)["Close"]
+
+        sa = LongOnlyGuardV2(**{k: v for k, v in STRATEGY_A_CONFIG.items() if k != "name"})
+        sb = LongOnlyGuardV2(**{k: v for k, v in STRATEGY_B_CONFIG.items() if k != "name"})
+
+        dp = DualPortfolioBacktester(
+            tqqq, sqqq, qqq, vix,
+            strategy_a=sa, strategy_b=sb,
+            initial_capital=INITIAL_CAPITAL,
+            **PORTFOLIO_DEFAULTS,
+        )
+        result  = dp.run()
+        ec_full = result["equity_curve"]["equity"]
+
+        shadow_start = pd.Timestamp(state.get("start_date", datetime.today().strftime("%Y-%m-%d")))
+        shadow_end   = pd.Timestamp(datetime.today().strftime("%Y-%m-%d"))
+
+        # Value just before shadow period started → use as normalization base
+        pre = ec_full[ec_full.index < shadow_start]
+        if pre.empty:
+            return {}
+        base_val = float(pre.iloc[-1])
+
+        SEED      = 5_000.0
+        shadow_ec = ec_full[ec_full.index >= shadow_start] / base_val * SEED
+        shadow_ec = shadow_ec[shadow_ec.index <= shadow_end]
+        if len(shadow_ec) < 2:
+            return {}
+
+        daily_ret   = shadow_ec.pct_change().dropna()
+        current_val = float(shadow_ec.iloc[-1])
+        prev_val    = float(shadow_ec.iloc[-2])
+
+        return {
+            "start_value":      SEED,
+            "current_value":    round(current_val, 2),
+            "gain_loss":        round(current_val - SEED, 2),
+            "pct_return":       round((current_val - SEED) / SEED * 100, 2),
+            "today_change_val": round(current_val - prev_val, 2),
+            "today_change_pct": round((current_val - prev_val) / prev_val * 100, 2),
+            "best_day_pct":     round(float(daily_ret.max()) * 100, 2),
+            "worst_day_pct":    round(float(daily_ret.min()) * 100, 2),
+        }
+    except Exception as e:
+        log.warning(f"Shadow P&L computation skipped: {e}")
+        return {}
+
+
+def send_daily_digest(signal: dict, state: dict, day_number: int, anomalies: list,
+                      pnl: dict = None):
     """Send a brief daily digest email every single run — no conditions."""
     from send_email import send_email as _send
 
@@ -312,11 +377,31 @@ def send_daily_digest(signal: dict, state: dict, day_number: int, anomalies: lis
         for a in anomalies:
             anomaly_block += f"  [{a['level']}] {a['code']}: {a['message']}\n"
 
+    # ── Portfolio snapshot block ──────────────────────────────────────────────
+    if pnl:
+        gain       = pnl["gain_loss"]
+        gain_sign  = "+" if gain >= 0 else ""
+        td_sign    = "+" if pnl["today_change_val"] >= 0 else ""
+        pnl_block  = f"""
+── PORTFOLIO SNAPSHOT (shadow / paper) ─────────────────────
+  Starting Capital     ${pnl['start_value']:>9,.2f}
+  Current Value        ${pnl['current_value']:>9,.2f}
+  Total Return         {gain_sign}${abs(gain):>8,.2f}   ({gain_sign}{pnl['pct_return']:.1f}%)
+
+  Today's Change       {td_sign}${abs(pnl['today_change_val']):>8,.2f}   ({td_sign}{pnl['today_change_pct']:.1f}%)
+  Best Single Day      +{pnl['best_day_pct']:.1f}%
+  Worst Single Day     {pnl['worst_day_pct']:.1f}%
+─────────────────────────────────────────────────────────────
+  No real money — shadow observation only"""
+    else:
+        pnl_block = "\n  (Portfolio P&L unavailable — data not fetched yet)"
+
     subject = (f"[Bot Day {day_number}] {emoji} {regime.upper()} "
                f"| VIX {vix_raw:.1f} | QQQ ${qqq:.2f} | {action} — {date_str}")
 
-    body = f"""Trading Bot Shadow Mode — Daily Digest
+    body = f"""Trading Bot — Daily Report
 Day {day_number}/{SHADOW_DAYS}  |  {date_str}
+{pnl_block}
 
 ── TODAY'S SIGNAL ───────────────────────────────────────────
   Regime:        {emoji} {regime.upper()}
@@ -325,16 +410,14 @@ Day {day_number}/{SHADOW_DAYS}  |  {date_str}
   QQQ (T-1):     ${qqq:.2f}  (SMA-130: ${sma:.2f}  {pct_sma:+.1f}% vs SMA)
   VIX smoothed:  {vix_sig:.1f}   (raw: {vix_raw:.1f})
 {anomaly_block}
-── SHADOW MODE STATS ────────────────────────────────────────
+── SHADOW STATS (since Mar 27) ──────────────────────────────
   BULL:      {pct_b:.1f}%  ({state['days_bull']} days)
   UNCERTAIN: {pct_u:.1f}%  ({state['days_uncertain']} days)
   HIGH-VOL:  {pct_h:.1f}%  ({state['days_high_vol']} days)
   Regime flips:  {state['regime_flips']}
-  Alerts fired:  {state['total_alerts']}
   Days left:     {SHADOW_DAYS - day_number}
 
-No trades placed — shadow observation only.
-Signal log: https://github.com/samarth339/bot-trader-3leveraged/commits/main
+Full log: https://github.com/samarth339/bot-trader-3leveraged/commits/main
 """
 
     ok = _send(subject, body, ALERT_EMAIL)
@@ -569,8 +652,16 @@ def main():
         state["total_alerts"] += 1
         send_alert_email(signal, anomalies, day_number)
 
+    # Compute shadow P&L (backtester over shadow window, normalized to $5K)
+    pnl = compute_shadow_pnl(state)
+    if pnl:
+        state["portfolio"] = pnl
+        log.info(f"Shadow P&L: ${pnl['current_value']:,.2f}  "
+                 f"({'+' if pnl['gain_loss']>=0 else ''}{pnl['pct_return']:.1f}%)  "
+                 f"Today: {'+' if pnl['today_change_val']>=0 else ''}{pnl['today_change_pct']:.1f}%")
+
     # Always send a brief daily digest
-    send_daily_digest(signal, state, day_number, anomalies)
+    send_daily_digest(signal, state, day_number, anomalies, pnl=pnl)
 
     # Weekly summary (every Friday or every 7 days)
     today_dt = datetime.today()

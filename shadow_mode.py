@@ -285,6 +285,62 @@ def send_alert_email(signal: dict, anomalies: list, day_number: int):
     return subject, body
 
 
+def send_daily_digest(signal: dict, state: dict, day_number: int, anomalies: list):
+    """Send a brief daily digest email every single run — no conditions."""
+    from send_email import send_email as _send
+
+    date_str = signal.get("as_of_date", datetime.today().strftime("%Y-%m-%d"))
+    regime   = signal.get("regime", "unknown")
+    emoji    = _regime_emoji(regime)
+    vix_raw  = signal.get("vix_raw",  0) or 0
+    vix_sig  = signal.get("vix_signal", 0) or 0
+    qqq      = signal.get("qqq_price", 0) or 0
+    sma      = signal.get("sma_val",   0) or 0
+    pct_sma  = signal.get("pct_vs_sma", 0) or 0
+    wa       = signal.get("weight_a",  0.5)
+    wb       = signal.get("weight_b",  0.5)
+    action   = signal.get("action", "?")
+
+    total   = max(state["day_number"], 1)
+    pct_b   = round(state["days_bull"]      / total * 100, 1)
+    pct_u   = round(state["days_uncertain"] / total * 100, 1)
+    pct_h   = round(state["days_high_vol"]  / total * 100, 1)
+
+    anomaly_block = ""
+    if anomalies:
+        anomaly_block = "\n── ALERTS ──────────────────────────────────────────────\n"
+        for a in anomalies:
+            anomaly_block += f"  [{a['level']}] {a['code']}: {a['message']}\n"
+
+    subject = (f"[Bot Day {day_number}] {emoji} {regime.upper()} "
+               f"| VIX {vix_raw:.1f} | QQQ ${qqq:.2f} | {action} — {date_str}")
+
+    body = f"""Trading Bot Shadow Mode — Daily Digest
+Day {day_number}/{SHADOW_DAYS}  |  {date_str}
+
+── TODAY'S SIGNAL ───────────────────────────────────────────
+  Regime:        {emoji} {regime.upper()}
+  Action:        {action}
+  Allocation:    {_alloc_str(wa, wb)}
+  QQQ (T-1):     ${qqq:.2f}  (SMA-130: ${sma:.2f}  {pct_sma:+.1f}% vs SMA)
+  VIX smoothed:  {vix_sig:.1f}   (raw: {vix_raw:.1f})
+{anomaly_block}
+── SHADOW MODE STATS ────────────────────────────────────────
+  BULL:      {pct_b:.1f}%  ({state['days_bull']} days)
+  UNCERTAIN: {pct_u:.1f}%  ({state['days_uncertain']} days)
+  HIGH-VOL:  {pct_h:.1f}%  ({state['days_high_vol']} days)
+  Regime flips:  {state['regime_flips']}
+  Alerts fired:  {state['total_alerts']}
+  Days left:     {SHADOW_DAYS - day_number}
+
+No trades placed — shadow observation only.
+Signal log: https://github.com/samarth339/bot-trader-3leveraged/commits/main
+"""
+
+    ok = _send(subject, body, ALERT_EMAIL)
+    log.info(f"Daily digest {'sent' if ok else 'FAILED'}: {subject}")
+
+
 def send_weekly_summary(state: dict, day_number: int):
     """Build and send weekly summary email."""
     from send_email import send_email as _send
@@ -511,6 +567,9 @@ def main():
     if anomalies:
         state["total_alerts"] += 1
         send_alert_email(signal, anomalies, day_number)
+
+    # Always send a brief daily digest
+    send_daily_digest(signal, state, day_number, anomalies)
 
     # Weekly summary (every Friday or every 7 days)
     today_dt = datetime.today()

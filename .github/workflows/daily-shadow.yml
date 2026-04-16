@@ -54,6 +54,84 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python3 shadow_mode.py
 
+      - name: Write job summary (visible in Actions tab)
+        if: always()
+        run: |
+          python3 - <<'PYEOF'
+          import json, csv, os, sys
+          from pathlib import Path
+
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+
+          state_path   = Path("logs/shadow_state.json")
+          history_path = Path("logs/signal_history.csv")
+
+          state = json.loads(state_path.read_text()) if state_path.exists() else {}
+          day   = state.get("day_number", "?")
+          total = max(int(day) if str(day).isdigit() else 1, 1)
+
+          pct_b = round(state.get("days_bull",      0) / total * 100, 1)
+          pct_u = round(state.get("days_uncertain", 0) / total * 100, 1)
+          pct_h = round(state.get("days_high_vol",  0) / total * 100, 1)
+
+          EMOJI = {"bull": "🐂", "uncertain": "⚠️", "high_vol": "🔴"}
+
+          rows = []
+          if history_path.exists():
+              with open(history_path) as f:
+                  rows = list(csv.DictReader(f))
+
+          latest = rows[-1] if rows else {}
+          regime = latest.get("regime", "—")
+          emoji  = EMOJI.get(regime, "❓")
+
+          lines = [
+              f"## {emoji} Trading Bot — Shadow Day {day}/30",
+              f"",
+              f"| Field | Value |",
+              f"|---|---|",
+              f"| Date | {latest.get('as_of_date', '—')} |",
+              f"| Regime | **{regime.upper()}** |",
+              f"| Action | {latest.get('action', '—')} |",
+              f"| Allocation | {int(float(latest.get('weight_a',0.5))*100)}% A / {int(float(latest.get('weight_b',0.5))*100)}% B |",
+              f"| QQQ (T-1) | ${float(latest.get('qqq_price',0)):.2f} |",
+              f"| VIX (raw) | {latest.get('vix_raw', '—')} |",
+              f"| VIX (smoothed) | {latest.get('vix_signal', '—')} |",
+              f"| % vs SMA | {latest.get('pct_vs_sma', '—')} |",
+              f"",
+              f"### Regime Distribution ({day} days)",
+              f"| Regime | Days | % |",
+              f"|---|---|---|",
+              f"| 🐂 Bull | {state.get('days_bull',0)} | {pct_b}% |",
+              f"| ⚠️ Uncertain | {state.get('days_uncertain',0)} | {pct_u}% |",
+              f"| 🔴 High-Vol | {state.get('days_high_vol',0)} | {pct_h}% |",
+              f"",
+              f"Regime flips: **{state.get('regime_flips',0)}** &nbsp;|&nbsp; Alerts fired: **{state.get('total_alerts',0)}**",
+              f"",
+              f"### Last 7 Signals",
+              f"| Date | Regime | Action | VIX | QQQ | Alloc |",
+              f"|---|---|---|---|---|---|",
+          ]
+
+          for r in rows[-7:]:
+              em = EMOJI.get(r.get("regime",""), "❓")
+              wa = float(r.get("weight_a", 0.5))
+              lines.append(
+                  f"| {r.get('as_of_date','—')} "
+                  f"| {em} {r.get('regime','—').upper()} "
+                  f"| {r.get('action','—')} "
+                  f"| {r.get('vix_raw','—')} "
+                  f"| ${float(r.get('qqq_price',0)):.2f} "
+                  f"| {int(wa*100)}/{int((1-wa)*100)} |"
+              )
+
+          lines += ["", "> No trades placed — shadow observation only."]
+
+          with open(summary_file, "a") as f:
+              f.write("\n".join(lines) + "\n")
+          print("Job summary written.")
+          PYEOF
+
       - name: Commit updated signal log and state back to repo
         run: |
           git config user.name  "bot-shadow[bot]"

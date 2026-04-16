@@ -1,0 +1,16 @@
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.36
+matplotlib>=3.7.0
+seaborn>=0.12.0
+scipy>=1.11.0
+ta>=0.10.2
+pytz>=2023.3
+tqdm>=4.65.0
+jupyter>=1.0.0
+ipykernel>=6.25.0
+
+# ── IBKR live execution (Phase 4/5) ───────────────────────────────────────────
+ib-insync>=0.9.86            # async IB Gateway / TWS API wrapper
+pandas-market-calendars>=4.1.4   # NYSE trading day calendar
+python-dotenv>=1.0.0         # .env credential loading (IBKR_HOST, IBKR_PORT)

@@ -1,0 +1,16 @@
+# CI-only dependencies — lean subset of requirements.txt
+# Excludes: Jupyter, ib-insync (not needed for shadow runs or unit tests)
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.36
+matplotlib>=3.7.0
+scipy>=1.11.0
+ta>=0.10.2
+pytz>=2023.3
+tqdm>=4.65.0
+python-dotenv>=1.0.0
+
+# Test runner
+pytest>=7.4.0
+pytest-timeout>=2.1.0
+pytest-cov>=4.1.0

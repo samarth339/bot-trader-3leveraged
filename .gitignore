@@ -1,0 +1,71 @@
+# macOS
+._*
+.DS_Store
+.AppleDouble
+.LSOverride
+__MACOSX/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and state (runtime artifacts — not source)
+logs/shadow_mode.log
+logs/ibkr_orders.csv
+logs/ibkr_state.json
+logs/ibkr_kill.flag
+logs/reports/
+
+# Data files (large, fetched via fetch_data.py)
+data/raw/
+data/processed/
+
+# Env / secrets
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# Grid search result CSVs (archived in archive/grid_search/)
+archive/grid_search/*.csv
+
+# Autoresearch runtime logs (large, generated)
+autoresearch/run.log
+
+# Backtest result exports
+logs/dual_test.csv
+logs/dual_production.csv
+
+# Runtime-only logs (not needed in repo history)
+logs/daily_signal.log
+logs/pending_email.json
+
+# Backup files
+*.bak
+
+# Claude Code project state (machine-local)
+.claude/

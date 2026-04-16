@@ -1,0 +1,73 @@
+name: Daily Shadow Run
+
+# Runs every weekday at 4:30 PM EST (21:30 UTC) — always after NYSE close.
+# In summer (EDT = UTC-4) this fires at 5:30 PM local, still post-market.
+# Manual trigger available for testing or catch-up runs.
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: "Force run even if today is a holiday?"
+        required: false
+        default: "false"
+        type: boolean
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  PYTHONDONTWRITEBYTECODE: 1
+
+jobs:
+  shadow-run:
+    name: Shadow Mode — Daily Signal
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo (with write access for log commit)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Fetch full history so git log / blame works in scripts
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Fetch latest market data
+        run: python3 data/fetch_data.py
+        # yfinance pulls up to yesterday's close; no secrets needed
+
+      - name: Run shadow mode (generate signal + update logs)
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python3 shadow_mode.py
+
+      - name: Commit updated signal log and state back to repo
+        run: |
+          git config user.name  "bot-shadow[bot]"
+          git config user.email "samarth339@gmail.com"
+
+          # Stage only the log files we expect to change each run
+          git add logs/signal_history.csv logs/shadow_state.json || true
+
+          # Only commit if there are actual changes
+          if git diff --cached --quiet; then
+            echo "No log changes to commit (possibly a market holiday or duplicate run)."
+          else
+            TODAY=$(date -u '+%Y-%m-%d')
+            git commit -m "shadow: daily signal log update ${TODAY} [skip ci]"
+            git push
+            echo "Log update pushed to main."
+          fi

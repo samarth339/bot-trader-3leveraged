@@ -52,7 +52,13 @@ jobs:
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: python3 shadow_mode.py
+        run: |
+          # Use --force on manual dispatch so test runs always generate a signal
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 shadow_mode.py --force
+          else
+            python3 shadow_mode.py
+          fi
 
       - name: Write job summary (visible in Actions tab)
         if: always()

@@ -486,6 +486,7 @@ def main():
     parser.add_argument("--report", action="store_true", help="Force generate 30-day report")
     parser.add_argument("--status", action="store_true", help="Print current shadow state")
     parser.add_argument("--reset",  action="store_true", help="Reset shadow state (day 0)")
+    parser.add_argument("--force",  action="store_true", help="Re-run even if already ran today (for testing)")
     args = parser.parse_args()
 
     state = load_state()
@@ -511,9 +512,9 @@ def main():
     # ── Normal daily run ──────────────────────────────────────────────────────
     today_str = datetime.today().strftime("%Y-%m-%d")
 
-    # Skip if already ran today
-    if state["last_run_date"] == today_str:
-        log.info(f"Already ran today ({today_str}). Skipping.")
+    # Skip if already ran today (bypass with --force)
+    if state["last_run_date"] == today_str and not args.force:
+        log.info(f"Already ran today ({today_str}). Skipping. Use --force to override.")
         return 0
 
     # Initialise start date

@@ -23,6 +23,8 @@ jobs:
     name: Shadow Mode — Daily Signal
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write   # required to commit signal logs back to main
 
     steps:
       - name: Checkout repo (with write access for log commit)

@@ -25,3 +25,4 @@ as_of_date,signal_date,regime,action,weight_a,weight_b,rebalance,drift_pct,qqq_p
 2026-04-29,2026-04-27,uncertain,HOLD,0.75,0.25,False,0.0,664.23,612.6459,8.42,18.89,17.83,True
 2026-04-30,2026-04-28,uncertain,HOLD,0.75,0.25,False,0.0,657.55,613.0118,7.27,18.56,18.81,True
 2026-05-01,2026-04-29,uncertain,HOLD,0.75,0.25,False,0.0,661.57,613.4099,7.85,18.54,16.89,True
+2026-05-04,2026-04-30,uncertain,HOLD,0.75,0.25,False,0.0,667.74,613.9006,8.77,18.05,16.99,True

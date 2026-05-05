@@ -109,11 +109,23 @@ class DualPortfolioBacktester:
         )
         return regime
 
-    def _weights(self, regime: str) -> tuple:
+    def _weights(self, regime: str, pct_vs_sma: float = None) -> tuple:
+        """
+        Return (weight_a, weight_b) for the given regime.
+        For uncertain regime, applies dynamic scaling by pct_vs_sma when provided,
+        mirroring daily_signal._uncertain_alloc() (expert-panel v2).
+        """
         if regime == "bull":
             return self.alloc_bull
         if regime == "high_vol":
             return self.alloc_hi_vol
+        # uncertain — dynamic if pct_vs_sma available, else fall back to fixed alloc_mid
+        if pct_vs_sma is not None and not np.isnan(pct_vs_sma):
+            if pct_vs_sma >  3.0: return (0.75, 0.25)
+            if pct_vs_sma >  1.0: return (0.70, 0.30)
+            if pct_vs_sma > -1.0: return (0.65, 0.35)
+            if pct_vs_sma > -3.0: return (0.55, 0.45)
+            return (0.45, 0.55)
         return self.alloc_mid
 
     # ── T-1 hard guard: build shifted signal series ───────────────────────────
@@ -179,14 +191,28 @@ class DualPortfolioBacktester:
         signal_close, signal_sma, signal_vix = self._build_signal_inputs(vix_smooth)
         dates = self.qqq["close"].index
 
+        # Pre-compute 5-day ROC on the shifted signal series (T-1 safe — same series)
+        roc_5_series = signal_close.pct_change(5) * 100  # % change over 5 bars
+
         labels = []
         for date in dates:
             price   = float(signal_close.get(date, np.nan))
             sma_val = float(signal_sma.get(date, np.nan))
             vix_val = float(signal_vix.loc[date]) \
                       if (signal_vix is not None and date in signal_vix.index) else 20.0
-            labels.append(self._classify(price, sma_val, vix_val,
-                                         self.vix_bull, self.vix_hi_vol))
+            regime  = self._classify(price, sma_val, vix_val,
+                                     self.vix_bull, self.vix_hi_vol)
+
+            # ── ROC-5 momentum override (mirrors daily_signal.py expert-panel v2) ──
+            # Upgrades high_vol → uncertain early when V-recovery is underway:
+            # strong 5-day momentum AND price near/above SMA → reduce defensive posture.
+            if regime == "high_vol" and not (np.isnan(price) or np.isnan(sma_val)):
+                roc_5   = float(roc_5_series.get(date, float("nan")))
+                pct_sma = (price - sma_val) / sma_val * 100
+                if not np.isnan(roc_5) and roc_5 > 3.0 and pct_sma > -1.5:
+                    regime = "uncertain"
+
+            labels.append(regime)
 
         # Confirmation inertia
         if _confirm > 1:
@@ -321,20 +347,33 @@ class DualPortfolioBacktester:
         if regime_series is None:
             regime_series = self.compute_regime_series()
 
+        # Pre-build signal inputs for dynamic uncertain allocation (pct_vs_sma)
+        signal_close_run, signal_sma_run, _ = self._build_signal_inputs()
+
         ret_a = ec_a.pct_change().fillna(0)
         ret_b = ec_b.pct_change().fillna(0)
 
         rows          = []
         portfolio_val = self.initial_capital
-        prev_wa       = self._weights(
-            regime_series.loc[common[0]] if common[0] in regime_series.index
-            else "uncertain"
-        )[0]
+        first_regime  = regime_series.loc[common[0]] if common[0] in regime_series.index \
+                        else "uncertain"
+        first_price   = float(signal_close_run.get(common[0], np.nan))
+        first_sma     = float(signal_sma_run.get(common[0], np.nan))
+        first_pct_sma = (first_price - first_sma) / first_sma * 100 \
+                        if not (np.isnan(first_price) or np.isnan(first_sma)) else float("nan")
+        prev_wa       = self._weights(first_regime, first_pct_sma)[0]
 
         for i, date in enumerate(common):
             regime  = regime_series.loc[date] if date in regime_series.index else "uncertain"
             assert regime in VALID_REGIMES, f"Regime '{regime}' not in {VALID_REGIMES}"
-            wa, wb  = self._weights(regime)
+
+            # Compute pct_vs_sma for dynamic uncertain allocation
+            price   = float(signal_close_run.get(date, np.nan))
+            sma_val = float(signal_sma_run.get(date, np.nan))
+            pct_sma = (price - sma_val) / sma_val * 100 \
+                      if not (np.isnan(price) or np.isnan(sma_val)) else float("nan")
+
+            wa, wb  = self._weights(regime, pct_sma)
 
             # Reconciliation check on every regime flip
             if wa != prev_wa:
@@ -344,13 +383,14 @@ class DualPortfolioBacktester:
             blended       = wa * float(ret_a.iloc[i]) + wb * float(ret_b.iloc[i])
             portfolio_val *= (1 + blended)
             rows.append({
-                "date":       date,
-                "equity":     portfolio_val,
-                "regime":     regime,
-                "weight_a":   wa,
-                "weight_b":   wb,
-                "ret_a":      round(float(ret_a.iloc[i]) * 100, 4),
-                "ret_b":      round(float(ret_b.iloc[i]) * 100, 4),
+                "date":        date,
+                "equity":      portfolio_val,
+                "regime":      regime,
+                "weight_a":    wa,
+                "weight_b":    wb,
+                "pct_vs_sma":  round(pct_sma, 2) if not np.isnan(pct_sma) else None,
+                "ret_a":       round(float(ret_a.iloc[i]) * 100, 4),
+                "ret_b":       round(float(ret_b.iloc[i]) * 100, 4),
                 "blended_ret": round(blended * 100, 4),
             })
 

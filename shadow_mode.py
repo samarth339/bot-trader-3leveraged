@@ -298,10 +298,10 @@ def compute_shadow_pnl(state: dict) -> dict:
         from config.strategy_config import STRATEGY_A_CONFIG, STRATEGY_B_CONFIG, PORTFOLIO_DEFAULTS
 
         DATA_DIR = ROOT / "data" / "processed"
-        tqqq = pd.read_csv(DATA_DIR / "TQQQ_full.csv", index_col=0, parse_dates=True)["Close"]
-        sqqq = pd.read_csv(DATA_DIR / "SQQQ_full.csv", index_col=0, parse_dates=True)["Close"]
-        qqq  = pd.read_csv(DATA_DIR / "QQQ_full.csv",  index_col=0, parse_dates=True)["Close"]
-        vix  = pd.read_csv(DATA_DIR / "VIX_full.csv",  index_col=0, parse_dates=True)["Close"]
+        tqqq = pd.read_csv(DATA_DIR / "TQQQ_full.csv", index_col=0, parse_dates=True)["close"]
+        sqqq = pd.read_csv(DATA_DIR / "SQQQ_full.csv", index_col=0, parse_dates=True)["close"]
+        qqq  = pd.read_csv(DATA_DIR / "QQQ_full.csv",  index_col=0, parse_dates=True)["close"]
+        vix  = pd.read_csv(DATA_DIR / "VIX_full.csv",  index_col=0, parse_dates=True)["close"]
 
         sa = LongOnlyGuardV2(**{k: v for k, v in STRATEGY_A_CONFIG.items() if k != "name"})
         sb = LongOnlyGuardV2(**{k: v for k, v in STRATEGY_B_CONFIG.items() if k != "name"})

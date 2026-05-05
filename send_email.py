@@ -58,7 +58,7 @@ def send_email(subject: str, body: str, to: str = None) -> bool:
     if not GMAIL_PASSWORD:
         log.error(
             "GMAIL_APP_PASSWORD not set. "
-            "Add it to /Volumes/SAM/bot-test/.env — see send_email.py for instructions."
+            "Add it to /Volumes/SAM/bot-trader-3leveraged/.env — see send_email.py for instructions."
         )
         return False
 

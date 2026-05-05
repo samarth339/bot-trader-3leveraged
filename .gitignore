@@ -63,6 +63,7 @@ logs/dual_production.csv
 # Runtime-only logs (not needed in repo history)
 logs/daily_signal.log
 logs/pending_email.json
+logs/pending_weekly_email.json
 
 # Backup files
 *.bak

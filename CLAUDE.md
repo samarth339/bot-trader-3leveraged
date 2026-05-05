@@ -32,8 +32,8 @@ live observation, no real trades). Goal: $775K+ from $5K seed over ~10 years.
 
 | Parameter | Value |
 |---|---|
-| Strategy A (Aggressive) | LongOnlyGuardV2: ma=190, vix_exit=25, vix_reentry=23, max_pos=85%, stagger=True |
-| Strategy B (Defensive) | LongOnlyGuardV2: ma=150, vix_exit=28, vix_reentry=24, max_pos=60%, vol_scale=True, crash_brake=30% |
+| Strategy A (Aggressive) | LongOnlyGuardV2: ma=190, vix_exit=25, vix_reentry=24, max_pos=85%, stagger=True |
+| Strategy B (Defensive) | LongOnlyGuardV2: ma=150, vix_exit=28, vix_reentry=22, max_pos=60%, vol_scale=True, crash_brake=30% |
 | Bull allocation | 90% A / 10% B |
 | Mid (uncertain) allocation | 65% A / 35% B |
 | High-vol allocation | 25% A / 75% B |
@@ -217,7 +217,7 @@ VIX 5-day avg (T-1) ──► threshold check ──────┘
    LongOnlyGuardV2                                                  LongOnlyGuardV2
    - Stays in TQQQ by default                                       - Same but more conservative
    - Exits on MA breach + VIX > 25                                  - Exits on MA breach + VIX > 28
-   - vix_reentry=23, ma=190, max_pos=95%                            - vix_reentry=24, max_pos=70%, crash_brake=30%
+   - vix_reentry=24, ma=190, max_pos=85%                            - vix_reentry=22, max_pos=60%, crash_brake=30%
    - Staggered exit (50% then rest)
               │                                                                   │
               └──────────────────── Blended returns ──────────────────────────────┘

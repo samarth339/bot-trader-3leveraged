@@ -68,7 +68,11 @@ STRATEGY_B_CONFIG = {
 
 # ── Risk Limits ────────────────────────────────────────────────────────────
 RISK_CONFIG = {
-    "max_drawdown_halt":     0.50,   # halt trading if portfolio DD exceeds this
+    "max_drawdown_halt":     0.35,   # halt trading if portfolio DD exceeds this
+                                     # tightened from 0.50 — OOS max DD was 55.4%,
+                                     # meaning 50% halt never would have fired in worst
+                                     # backtested scenario. 35% aligns with 37.7% full-
+                                     # period max DD target (expert panel v2).
     "daily_stop_loss":       0.07,   # per-position daily stop-loss
     "alloc_drift_warn":      0.02,   # warn if actual allocation drifts >2% from target
     "alloc_drift_rebalance": 0.05,   # force rebalance if drift >5%

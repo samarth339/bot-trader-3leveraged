@@ -9,6 +9,7 @@ ta>=0.10.2
 pytz>=2023.3
 tqdm>=4.65.0
 python-dotenv>=1.0.0
+pandas-market-calendars>=4.1.4   # NYSE trading-day guard in shadow_mode.py
 
 # Test runner
 pytest>=7.4.0

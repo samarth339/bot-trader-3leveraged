@@ -33,6 +33,32 @@ import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 
+
+# ── Trading-day guard ─────────────────────────────────────────────────────────
+
+def is_trading_day(dt: datetime = None) -> bool:
+    """
+    Returns True only if dt (default: today) is a NYSE trading day.
+    Uses pandas_market_calendars when available; falls back to a
+    weekend-only check so CI environments without the package still work.
+    """
+    dt = dt or datetime.today()
+    date_str = dt.strftime("%Y-%m-%d")
+
+    # Weekends are never trading days — fast exit before any import
+    if dt.weekday() >= 5:
+        return False
+
+    try:
+        import pandas_market_calendars as mcal
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(start_date=date_str, end_date=date_str)
+        return not schedule.empty
+    except Exception:
+        # pandas_market_calendars not installed or network issue — fall back to
+        # weekend check only (already done above, so return True for weekdays)
+        return True
+
 # ── Email (Gmail MCP is called via subprocess to avoid import complexity) ───
 ALERT_EMAIL = "samarth339@gmail.com"
 
@@ -594,6 +620,14 @@ def main():
 
     # ── Normal daily run ──────────────────────────────────────────────────────
     today_str = datetime.today().strftime("%Y-%m-%d")
+
+    # Guard: skip weekends and NYSE holidays — markets are closed, no new data.
+    # Bypass with --force for manual testing on non-trading days.
+    if not args.force and not is_trading_day():
+        day_type = "weekend" if datetime.today().weekday() >= 5 else "market holiday"
+        log.info(f"Today ({today_str}) is a {day_type} — no market data. Skipping. "
+                 f"Use --force to override.")
+        return 0
 
     # Skip if already ran today (bypass with --force)
     if state["last_run_date"] == today_str and not args.force:

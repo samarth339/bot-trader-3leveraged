@@ -1,11 +1,11 @@
 {
   "start_date": "2026-03-27",
-  "day_number": 31,
-  "last_run_date": "2026-05-08",
+  "day_number": 32,
+  "last_run_date": "2026-05-11",
   "prev_regime": "bull",
   "total_alerts": 2,
   "regime_flips": 2,
-  "days_bull": 3,
+  "days_bull": 4,
   "days_uncertain": 18,
   "days_high_vol": 10,
   "completed": true

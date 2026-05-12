@@ -56,12 +56,14 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
           # Use --force on manual dispatch so test runs always generate a signal
+          set +e
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python3 shadow_mode.py --force
           else
             python3 shadow_mode.py
           fi
           RC=$?
+          set -e
           # Exit code 2 = anomalies detected (regime flip, VIX spike) — expected
           # behaviour. Email was sent. Treat as success so the commit step runs.
           # Exit code 1 = real error (data failure, signal crash) — fail the job.

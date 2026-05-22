@@ -296,7 +296,7 @@ def _build_body(plan, order_result, account, signal, env, dry_run) -> str:
 def _send_alert(subject: str, body: str):
     try:
         import send_email
-        send_email.send(subject=subject, body=body)
+        send_email.send_email(subject=subject, body=body)
         logger.debug(f"Alert sent: {subject}")
     except Exception as exc:
         logger.warning(f"Email alert failed (non-critical): {exc}")

@@ -129,10 +129,12 @@ class IBClient:
                     timeout=self.config.timeout,
                     readonly=False,
                 )
+                # serverVersion lives on ib.client in ib_insync 0.9.x
+                sv = self.ib.client.serverVersion()
                 self._connected = True
                 self._start_heartbeat()
                 logger.info(
-                    f"Connected ✓  serverVersion={self.ib.serverVersion()}  "
+                    f"Connected ✓  serverVersion={sv}  "
                     f"account={self.ib.wrapper.accounts}"
                 )
                 return True

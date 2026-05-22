@@ -171,6 +171,9 @@ class IBClient:
     def _heartbeat_loop(self):
         """Background thread: ping server every HEARTBEAT_INTERVAL seconds."""
         while not self._stop_heartbeat.wait(HEARTBEAT_INTERVAL):
+            # Stop flag set by disconnect() — exit immediately without reconnecting
+            if self._stop_heartbeat.is_set():
+                return
             if not self.ib.isConnected():
                 logger.warning("Heartbeat: connection lost — triggering reconnect")
                 self.connect(deadline_secs=300)

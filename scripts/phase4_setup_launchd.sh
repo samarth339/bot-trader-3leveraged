@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # phase4_setup_launchd.sh — Install a macOS LaunchAgent that runs phase4_run.sh
-# at 3:43 PM Eastern time (Mon–Fri).
+# at 3:45 PM Eastern time (Mon–Fri).
 #
-# Detects your machine's timezone and converts 3:43 PM ET automatically,
+# 3:45 PM ET is the executor's submission window open time. The script pipeline
+# (git pull + data fetch + IB sync) takes ~25s, so the MOC order hits at ~3:45:25 —
+# well inside the 3:45–3:50 MOC window.
+#
+# Detects your machine's timezone and converts 3:45 PM ET automatically,
 # so the plist fires at the correct local time regardless of where you are.
 #
 # Usage:  bash scripts/phase4_setup_launchd.sh
@@ -25,7 +29,7 @@ fi
 # ── Compute local execution time (ET 15:43 → local) ───────────────────────────
 # Uses macOS date command to resolve timezone offsets without needing pytz.
 ET_TARGET_HOUR=15
-ET_TARGET_MIN=43
+ET_TARGET_MIN=45
 
 ET_OFFSET_STR=$(TZ=America/New_York date +%z)    # e.g. -0400 or -0500
 LOCAL_OFFSET_STR=$(date +%z)                     # e.g. -0700
@@ -55,7 +59,7 @@ echo "════════════════════════�
 echo "  Phase 4 LaunchAgent Setup"
 echo "══════════════════════════════════════════════"
 echo ""
-echo "  Execution target: 3:43 PM ET (NYSE window opens 3:45 PM)"
+echo "  Execution target: 3:45 PM ET (NYSE MOC window: 3:45–3:50 PM)"
 echo "  Your timezone:    $LOCAL_TZ  ($LOCAL_OFFSET_STR)"
 echo "  Scheduled at:     $(printf '%02d:%02d' $LOCAL_HOUR $LOCAL_MIN) local"
 echo ""
@@ -79,7 +83,7 @@ cat > "$PLIST_PATH" <<PLIST
         <string>${RUN_SCRIPT}</string>
     </array>
 
-    <!-- Mon–Fri at ${LOCAL_HOUR}:$(printf '%02d' $LOCAL_MIN) local (= 3:43 PM ET) -->
+    <!-- Mon–Fri at ${LOCAL_HOUR}:$(printf '%02d' $LOCAL_MIN) local (= 3:45 PM ET) -->
     <key>StartCalendarInterval</key>
     <array>
         <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>${LOCAL_HOUR}</integer><key>Minute</key><integer>${LOCAL_MIN}</integer></dict>

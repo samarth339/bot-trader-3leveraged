@@ -68,7 +68,7 @@ def _signal_table(signals: pd.DataFrame) -> html.Div:
     rows_df = signals.sort_values("as_of_date", ascending=False).head(60)
 
     header = html.Tr([
-        html.Th(c) for c in ["Date", "Regime", "Action", "A%", "B%", "QQQ", "VIX", "5d Fwd", "✓"]
+        html.Th(c) for c in ["Date", "Regime", "Action", "A%", "B%", "QQQ", "VIX", "Gap", "5d Fwd", "✓"]
     ])
 
     rows = []
@@ -90,8 +90,25 @@ def _signal_table(signals: pd.DataFrame) -> html.Div:
         qqq_str = f"${float(qqq_p):,.1f}" if qqq_p not in ("", None) else "—"
         vix_r   = r.get("vix_raw", "")
         vix_str = f"{float(vix_r):.1f}" if vix_r not in ("", None) else "—"
-
         date_str = str(r.get("as_of_date", ""))[:10]
+
+        # Gap guard column — only populated for rows after the feature landed
+        gap_raw = r.get("gap_pct", "")
+        gap_triggered = str(r.get("gap_guard", "")).lower() in ("true", "1", "yes")
+        if gap_raw not in ("", None) and str(gap_raw) != "nan":
+            gap_val = float(gap_raw)
+            if gap_triggered:
+                gap_cell = html.Td(
+                    f"🚫 {gap_val:+.1f}%",
+                    style={"color": "#f85149", "fontWeight": "700"},
+                )
+            else:
+                gap_cell = html.Td(
+                    f"{gap_val:+.1f}%",
+                    style={"color": "#3fb950"},
+                )
+        else:
+            gap_cell = html.Td("—", style={"color": "#484f58"})
 
         rows.append(html.Tr([
             html.Td(date_str),
@@ -101,6 +118,7 @@ def _signal_table(signals: pd.DataFrame) -> html.Div:
             html.Td(f"{float(r.get('weight_b',0)):.0%}"),
             html.Td(qqq_str),
             html.Td(vix_str),
+            gap_cell,
             html.Td(fwd_str),
             html.Td(outcome, className=outcome_cls),
         ]))

@@ -262,7 +262,8 @@ def append_signal_log(row: dict):
 
 
 # ── Display ────────────────────────────────────────────────────────────────────
-def print_signal(sig: dict, action: dict, shadow: bool = False):
+def print_signal(sig: dict, action: dict, shadow: bool = False,
+                 gap_triggered: bool = False, gap_pct: float = float("nan")):
     w      = 54
     border = "═" * w
     mid    = "─" * w
@@ -318,6 +319,12 @@ def print_signal(sig: dict, action: dict, shadow: bool = False):
     print(f"╠{border}╣")
     print(line(f"Execution      : {EXECUTION_CONFIG['model'].upper()} + "
                f"{EXECUTION_CONFIG['slippage_bps']} bps slippage"))
+    if not np.isnan(gap_pct):
+        gap_str = f"{gap_pct*100:+.2f}%" if not np.isnan(gap_pct) else "n/a"
+        if gap_triggered:
+            print(line(f"🚫 GAP GUARD    : TRIGGERED ({gap_str} open) — BUY blocked"))
+        else:
+            print(line(f"✅ Gap guard    : clear  ({gap_str} open)"))
     if shadow:
         print(line("⚠  SHADOW MODE — signals logged, no trades placed"))
     print(f"╚{border}╝\n")
@@ -359,25 +366,51 @@ def main():
                             pct_vs_sma=sig["pct_vs_sma"] if not np.isnan(sig["pct_vs_sma"]) else 0.0,
                             prev_pct_vs_sma=prev_pct_vs_sma)
 
+    # ── Gap guard check ────────────────────────────────────────────────────────
+    # Run for today's live signal (not for historical --date back-calculations,
+    # since we can't reconstruct intraday open prices for past dates).
+    gap_triggered = False
+    gap_pct_val   = float("nan")
+    if not args.date:
+        try:
+            from ibkr.gap_guard import GapGuard
+            gap_result    = GapGuard().check()
+            gap_triggered = gap_result.triggered
+            gap_pct_val   = gap_result.gap_pct
+            if gap_triggered:
+                logger.warning(
+                    f"⚠  GAP GUARD: TQQQ opened {gap_pct_val*100:+.1f}% — "
+                    "would block BUY orders at execution time"
+                )
+            else:
+                logger.info(
+                    f"Gap guard: clear  (TQQQ open gap {gap_pct_val*100:+.2f}%)"
+                )
+        except Exception as exc:
+            logger.warning(f"Gap guard check skipped in signal run: {exc}")
+
     # Display
-    print_signal(sig, action, shadow=args.shadow)
+    print_signal(sig, action, shadow=args.shadow,
+                 gap_triggered=gap_triggered, gap_pct=gap_pct_val)
 
     # Log signal
     log_row = {
-        "as_of_date":    sig["as_of_date"].strftime("%Y-%m-%d"),
-        "signal_date":   sig["signal_date"].strftime("%Y-%m-%d"),
-        "regime":        sig["regime"],
-        "action":        action["action"],
-        "weight_a":      action["target_alloc"][0],
-        "weight_b":      action["target_alloc"][1],
-        "rebalance":     action["rebalance_needed"],
-        "drift_pct":     action["drift_pct"],
-        "qqq_price":     round(sig["price_signal"], 4),
-        "sma_val":       round(sig["sma_val"], 4) if not np.isnan(sig["sma_val"]) else "",
-        "pct_vs_sma":    round(sig["pct_vs_sma"], 2) if not np.isnan(sig["pct_vs_sma"]) else "",
-        "vix_signal":    round(sig["vix_signal"], 2),
-        "vix_raw":       round(sig["vix_raw"], 2) if not np.isnan(sig["vix_raw"]) else "",
-        "shadow":        args.shadow,
+        "as_of_date":       sig["as_of_date"].strftime("%Y-%m-%d"),
+        "signal_date":      sig["signal_date"].strftime("%Y-%m-%d"),
+        "regime":           sig["regime"],
+        "action":           action["action"],
+        "weight_a":         action["target_alloc"][0],
+        "weight_b":         action["target_alloc"][1],
+        "rebalance":        action["rebalance_needed"],
+        "drift_pct":        action["drift_pct"],
+        "qqq_price":        round(sig["price_signal"], 4),
+        "sma_val":          round(sig["sma_val"], 4) if not np.isnan(sig["sma_val"]) else "",
+        "pct_vs_sma":       round(sig["pct_vs_sma"], 2) if not np.isnan(sig["pct_vs_sma"]) else "",
+        "vix_signal":       round(sig["vix_signal"], 2),
+        "vix_raw":          round(sig["vix_raw"], 2) if not np.isnan(sig["vix_raw"]) else "",
+        "shadow":           args.shadow,
+        "gap_guard":        gap_triggered,
+        "gap_pct":          round(gap_pct_val * 100, 2) if not np.isnan(gap_pct_val) else "",
     }
     append_signal_log(log_row)
     logger.info(f"Signal logged: regime={sig['regime']}  "

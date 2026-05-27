@@ -1,4 +1,9 @@
 pandas>=2.0.0
+
+# ── Dashboard (Phase 4) ───────────────────────────────────────────────────────
+dash>=2.14.0
+plotly>=5.18.0
+dash-bootstrap-components>=1.5.0
 numpy>=1.24.0
 yfinance>=0.2.36
 matplotlib>=3.7.0

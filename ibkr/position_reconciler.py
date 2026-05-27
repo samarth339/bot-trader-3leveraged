@@ -157,11 +157,19 @@ class PositionReconciler:
         )
 
     # ── Target allocation ──────────────────────────────────────────────────────
+
     def compute_blended_target_pct(self, signal: dict) -> float:
         """
         Compute blended TQQQ target as fraction of NLV.
 
-        If _daily_stop_triggered is set in signal, returns 0.0 (full exit).
+        Overlays applied (in order):
+          1. Daily stop override — if _daily_stop_triggered, return 0.0 (full exit).
+
+        Note: VIX-level scaling (P3) was evaluated (2010–2026 backtest) and removed.
+        When combined with the gap guard (P4), P3 reduced CAGR 42% → 38% while
+        paradoxically *worsening* max drawdown (−32.5% → −35.3%) by keeping the
+        portfolio underweight during V-shaped recoveries.  The existing high_vol
+        regime already handles VIX-driven de-risking at ~21% TQQQ allocation.
         """
         if signal.get("_daily_stop_triggered"):
             logger.warning("Daily stop override: target allocation forced to 0.0%")

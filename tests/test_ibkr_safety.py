@@ -804,3 +804,200 @@ class TestOrderManagerDryRun:
 
         df = pd.read_csv(temp_logs / "ibkr_orders.csv")
         assert len(df) == 3, f"Expected 3 rows, got {len(df)}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Gap Guard Tests (Guard 10)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGapGuard:
+    """Unit tests for ibkr/gap_guard.py — no real network calls."""
+
+    def _make_intraday_df(self, open_price: float) -> "pd.DataFrame":
+        import pandas as pd
+        idx = pd.date_range("2026-05-22 09:30", periods=1, freq="1min")
+        return pd.DataFrame({"Open": [open_price], "Close": [open_price]}, index=idx)
+
+    def test_no_trigger_on_small_gap(self, tmp_path, monkeypatch):
+        """Gap of -3% is below the 5% threshold — guard should not trigger."""
+        import pandas as pd
+        from ibkr.gap_guard import GapGuard, TQQQ_CSV
+
+        prev_close = 100.0
+        open_price = 97.0   # -3% gap
+
+        csv_df = pd.DataFrame(
+            {"close": [prev_close]},
+            index=pd.to_datetime(["2026-05-21"]),
+        )
+        csv_path = tmp_path / "TQQQ_full.csv"
+        csv_df.to_csv(csv_path)
+        monkeypatch.setattr("ibkr.gap_guard.TQQQ_CSV", csv_path)
+
+        with patch("ibkr.gap_guard.yf.download") as mock_dl:
+            mock_dl.return_value = self._make_intraday_df(open_price)
+            result = GapGuard().check()
+
+        assert not result.triggered
+        assert abs(result.gap_pct - (-0.03)) < 1e-9
+
+    def test_triggers_on_large_gap(self, tmp_path, monkeypatch):
+        """Gap of -10% exceeds the 5% threshold — guard must trigger."""
+        import pandas as pd
+        from ibkr.gap_guard import GapGuard
+
+        prev_close = 100.0
+        open_price = 90.0   # -10% gap
+
+        csv_df = pd.DataFrame(
+            {"close": [prev_close]},
+            index=pd.to_datetime(["2026-05-21"]),
+        )
+        csv_path = tmp_path / "TQQQ_full.csv"
+        csv_df.to_csv(csv_path)
+        monkeypatch.setattr("ibkr.gap_guard.TQQQ_CSV", csv_path)
+
+        with patch("ibkr.gap_guard.yf.download") as mock_dl:
+            mock_dl.return_value = self._make_intraday_df(open_price)
+            result = GapGuard().check()
+
+        assert result.triggered
+        assert result.gap_pct < -0.05
+        assert result.open_price == pytest.approx(open_price)
+        assert result.prev_close == pytest.approx(prev_close)
+        assert "BUY orders blocked" in result.reason
+
+    def test_skipped_gracefully_on_price_fetch_failure(self, tmp_path, monkeypatch):
+        """If yfinance fails, guard must not trigger (fail-open, not fail-closed)."""
+        import pandas as pd
+        from ibkr.gap_guard import GapGuard
+
+        csv_df = pd.DataFrame(
+            {"close": [100.0]},
+            index=pd.to_datetime(["2026-05-21"]),
+        )
+        csv_path = tmp_path / "TQQQ_full.csv"
+        csv_df.to_csv(csv_path)
+        monkeypatch.setattr("ibkr.gap_guard.TQQQ_CSV", csv_path)
+
+        with patch("ibkr.gap_guard.yf.download", side_effect=RuntimeError("network error")):
+            result = GapGuard().check()
+
+        assert not result.triggered, "Guard must fail-open if price is unavailable"
+
+    def test_today_rows_excluded_from_prev_close(self, tmp_path, monkeypatch):
+        """Rows dated today must not be used as prev_close."""
+        import pandas as pd
+        from ibkr.gap_guard import GapGuard
+
+        today = pd.Timestamp.today().normalize()
+        yesterday = today - pd.Timedelta(days=1)
+
+        csv_df = pd.DataFrame(
+            {"close": [80.0, 95.0]},            # 80 = yesterday, 95 = today partial
+            index=[yesterday, today],
+        )
+        csv_path = tmp_path / "TQQQ_full.csv"
+        csv_df.to_csv(csv_path)
+        monkeypatch.setattr("ibkr.gap_guard.TQQQ_CSV", csv_path)
+
+        with patch("ibkr.gap_guard.yf.download") as mock_dl:
+            # open = 76 → gap vs 80 = -5%, vs 95 = -20%
+            mock_dl.return_value = self._make_intraday_df(76.0)
+            result = GapGuard().check()
+
+        # Should use 80 (yesterday), not 95 (today)
+        assert result.prev_close == pytest.approx(80.0)
+        assert result.gap_pct == pytest.approx((76.0 / 80.0) - 1.0)
+
+
+class TestGapGuardInSafetyGuard:
+    """Integration tests: gap_guard wired into SafetyGuard.run_all_checks()."""
+
+    def _make_guard(self, mock_account, signal, tmp_path, monkeypatch, shadow_done=True):
+        """Build a SafetyGuard with all filesystem deps redirected."""
+        import ibkr.kill_switch as ks
+        import ibkr.state as st
+        from ibkr.safety_guard import SHADOW_STATE_PATH, SafetyGuard
+
+        monkeypatch.setattr(ks, "KILL_SWITCH_PATH", tmp_path / "ibkr_kill.flag")
+        monkeypatch.setattr(st, "STATE_PATH", tmp_path / "ibkr_state.json")
+
+        shadow = tmp_path / "shadow_state.json"
+        shadow.write_text(
+            '{"completed": true, "day_number": 40}' if shadow_done
+            else '{"completed": false, "day": 15}'
+        )
+        monkeypatch.setattr("ibkr.safety_guard.SHADOW_STATE_PATH", shadow)
+
+        signal["shadow"] = False
+        return SafetyGuard(account_state=mock_account, signal=signal)
+
+    def _passthrough(self) -> "GuardResult":
+        from ibkr.safety_guard import GuardResult
+        return GuardResult(blocked=False)
+
+    def test_gap_guard_blocks_buy_on_large_gap(
+        self, tmp_path, monkeypatch, mock_account, bull_signal
+    ):
+        """Guard 10 must block a HOLD/BUY signal when TQQQ gapped down >5%."""
+        from ibkr.gap_guard import GapGuardResult
+        from ibkr.safety_guard import SafetyGuard
+
+        guard = self._make_guard(mock_account, bull_signal, tmp_path, monkeypatch)
+
+        # Stub out guards 4, 5, 7, 9 which make real external calls or check
+        # live time/prices — we only want to exercise guard 10 here.
+        passthrough = self._passthrough
+        with patch.object(SafetyGuard, "_check_market_hours",    passthrough), \
+             patch.object(SafetyGuard, "_check_portfolio_drawdown", passthrough), \
+             patch.object(SafetyGuard, "_check_daily_loss",      passthrough), \
+             patch.object(SafetyGuard, "_check_vix_extreme",     passthrough), \
+             patch("ibkr.safety_guard.GapGuard") as mock_gg_cls:
+
+            mock_gg = MagicMock()
+            mock_gg.check.return_value = GapGuardResult(
+                triggered=True, gap_pct=-0.08, open_price=92.0, prev_close=100.0,
+                reason="TQQQ opened -8.0% — BUY orders blocked.",
+            )
+            mock_gg_cls.return_value = mock_gg
+
+            result = guard.run_all_checks()
+
+        assert result.blocked
+        assert "BUY orders blocked" in result.reason
+
+    def test_gap_guard_allows_sell_on_large_gap(
+        self, tmp_path, monkeypatch, mock_account, bull_signal
+    ):
+        """Guard 10 must NOT block SELL/REDUCE actions on a gap-down day."""
+        from ibkr.gap_guard import GapGuardResult
+        from ibkr.safety_guard import SafetyGuard
+
+        sell_signal = {**bull_signal, "action": "REDUCE_A", "weight_a": 0.25, "weight_b": 0.75}
+        guard = self._make_guard(mock_account, sell_signal, tmp_path, monkeypatch)
+
+        passthrough = self._passthrough
+        with patch.object(SafetyGuard, "_check_market_hours",    passthrough), \
+             patch.object(SafetyGuard, "_check_portfolio_drawdown", passthrough), \
+             patch.object(SafetyGuard, "_check_daily_loss",      passthrough), \
+             patch.object(SafetyGuard, "_check_vix_extreme",     passthrough), \
+             patch("ibkr.safety_guard.GapGuard") as mock_gg_cls:
+
+            mock_gg = MagicMock()
+            mock_gg.check.return_value = GapGuardResult(
+                triggered=True, gap_pct=-0.08, open_price=92.0, prev_close=100.0,
+                reason="TQQQ opened -8.0% — BUY orders blocked.",
+            )
+            mock_gg_cls.return_value = mock_gg
+
+            result = guard.run_all_checks()
+
+        assert not result.blocked, "SELL actions must pass through even on gap-down days"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  VIX Scaling (P3) — evaluated and removed
+#  Backtest showed P3 costs CAGR 42%→38% while worsening max DD (-32.5%→-35.3%)
+#  when combined with P4 (gap guard).  Tests removed alongside the feature.
+# ══════════════════════════════════════════════════════════════════════════════

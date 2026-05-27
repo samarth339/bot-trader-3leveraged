@@ -3,12 +3,16 @@ executor.py — Main Orchestrator  (main.py)
 ==========================================
 Coordinates all IBKR modules into a single execution flow.
 
-Execution sequence (runs daily at 15:50 EST):
+Execution sequence (runs daily at 15:45 EST):
   1.  Read today's signal from logs/signal_history.csv
   2.  Connect to IB Gateway (with exponential backoff)
   3.  Fetch account state (NLV, positions, buying power)
-  4.  Run all 9 safety guards
+  4.  Run all 10 safety guards
+        Guard 10 (gap_guard): blocks BUY if TQQQ opened down >5%
   5.  Compute rebalancing plan (target allocation → delta shares)
+        VIX scaling applied inside compute_blended_target_pct():
+          VIX 5d > 40 → hard cap at 10%
+          VIX 5d > 30 → scale ×0.60
   6.  Adjust for buying power limits (BUY orders only)
   7.  Submit MOC order (or limit-close if past 15:50)
   8.  Update persistent state (ibkr_state.json)

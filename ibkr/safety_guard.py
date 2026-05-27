@@ -1,7 +1,7 @@
 """
 safety_guard.py — Pre-Flight Safety Checks
 ============================================
-ALL 9 guards must pass before any order is submitted.
+ALL 10 guards must pass before any order is submitted.
 First failure wins — subsequent guards are not checked.
 
 Guards (in priority order):
@@ -14,9 +14,14 @@ Guards (in priority order):
   7.  TQQQ daily loss ≥ 7%               → converts to SELL (does not block)
   8.  Position size > 105% NLV            → sanity block
   9.  Live VIX ≥ 45 (extreme)             → BUY block only
+  10. TQQQ overnight gap-down > 5%        → BUY block only
 
 Guard 7 does not block — it mutates the signal dict to force a SELL so the
 order_manager can exit the position safely at close.
+
+Guard 10 does not block SELL orders — reducing exposure on a gap-down day
+is always permitted.  Rationale: 87% of >5% gap-down days close lower than
+the open, making new BUY entries at MOC inadvisable.
 
 Usage:
     guard  = SafetyGuard(account_state=account, signal=signal)
@@ -37,6 +42,7 @@ import yfinance as yf
 
 from config.strategy_config import RISK_CONFIG, STRATEGY_A_CONFIG, STRATEGY_B_CONFIG
 from .account import AccountState
+from .gap_guard import GapGuard
 from . import kill_switch
 from . import state as state_module
 
@@ -93,6 +99,7 @@ class SafetyGuard:
             ("daily_loss",        self._check_daily_loss),       # mutates signal
             ("position_sanity",   self._check_position_sanity),
             ("vix_extreme",       self._check_vix_extreme),
+            ("gap_guard",         self._check_gap_guard),        # BUY block only
         ]
         for name, check_fn in checks:
             result = check_fn()
@@ -101,7 +108,7 @@ class SafetyGuard:
                 return result
             logger.debug(f"Guard [{name}] ✓")
 
-        logger.info("All 9 safety guards passed ✓")
+        logger.info("All 10 safety guards passed ✓")
         return GuardResult(blocked=False)
 
     # ── Guard 1: Kill switch ───────────────────────────────────────────────────
@@ -342,6 +349,39 @@ class SafetyGuard:
         except Exception as exc:
             logger.warning(f"VIX extreme check skipped (fetch error): {exc}")
 
+        return GuardResult(blocked=False)
+
+    # ── Guard 10: Overnight gap-down protection ────────────────────────────────
+    def _check_gap_guard(self) -> GuardResult:
+        """
+        Block BUY orders when TQQQ has gapped down >5% at the open.
+
+        Sells are always permitted — reducing risk on a bad open is fine.
+        The guard is skipped gracefully if price data is unavailable
+        (price fetch errors should never block a legitimate execution).
+        """
+        gap = GapGuard().check()
+
+        if not gap.triggered:
+            return GuardResult(blocked=False)
+
+        # Only block if we'd be increasing or maintaining long TQQQ exposure.
+        # Same pattern as Guard 9 (vix_extreme) — sells always pass through.
+        action   = self.signal.get("action", "HOLD")
+        weight_a = float(self.signal.get("weight_a", 0))
+        is_buying = (
+            action in ("INCREASE_A", "HOLD")
+            and weight_a > 0
+            and not self.signal.get("_daily_stop_triggered", False)
+        )
+
+        if is_buying:
+            return GuardResult(blocked=True, reason=gap.reason)
+
+        logger.warning(
+            f"Gap guard triggered ({gap.gap_pct*100:+.1f}%) but "
+            f"action={action} — SELL orders proceed"
+        )
         return GuardResult(blocked=False)
 
     # ── Helpers ────────────────────────────────────────────────────────────────

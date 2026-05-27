@@ -1,0 +1,382 @@
+/* ── Global ───────────────────────────────────────────────────────────────── */
+:root {
+  --bg-base:       #0d1117;
+  --bg-card:       #161b22;
+  --bg-card-hover: #1c2230;
+  --border:        #30363d;
+  --text-primary:  #e6edf3;
+  --text-secondary:#8b949e;
+  --text-muted:    #484f58;
+  --accent-blue:   #388bfd;
+  --accent-green:  #3fb950;
+  --accent-red:    #f85149;
+  --accent-yellow: #d29922;
+  --accent-purple: #bc8cff;
+  --bull-color:    #3fb950;
+  --uncertain-color: #d29922;
+  --high-vol-color:  #f85149;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  margin: 0;
+  font-size: 13px;
+}
+
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+.dash-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 20px 40px;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+.header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+.header-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.header-meta {
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ── KPI Cards ────────────────────────────────────────────────────────────── */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.kpi-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  transition: background 0.15s;
+}
+
+.kpi-card:hover { background: var(--bg-card-hover); }
+
+.kpi-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.kpi-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.kpi-delta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.kpi-value.positive { color: var(--accent-green); }
+.kpi-value.negative { color: var(--accent-red); }
+.kpi-value.regime-bull { color: var(--bull-color); }
+.kpi-value.regime-uncertain { color: var(--uncertain-color); }
+.kpi-value.regime-high-vol { color: var(--high-vol-color); }
+
+/* ── Generic card ─────────────────────────────────────────────────────────── */
+.panel-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 14px;
+}
+
+/* ── Equity chart ─────────────────────────────────────────────────────────── */
+.equity-chart-wrap {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.chart-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.chart-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+  transition: all 0.12s;
+}
+
+.chart-tab.active,
+.chart-tab:hover {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+/* ── Signal table ─────────────────────────────────────────────────────────── */
+.signal-table-wrap {
+  overflow-x: auto;
+}
+
+table.signal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+table.signal-table th {
+  text-align: left;
+  padding: 7px 10px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+table.signal-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #1c2230;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+table.signal-table tr:last-child td { border-bottom: none; }
+table.signal-table tr:hover td { background: var(--bg-card-hover); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-bull     { background: #0d2818; color: var(--bull-color); }
+.badge-uncertain{ background: #2a1e04; color: var(--uncertain-color); }
+.badge-high-vol { background: #2d0e0e; color: var(--high-vol-color); }
+
+.outcome-win  { color: var(--accent-green); font-weight: 700; }
+.outcome-loss { color: var(--accent-red); font-weight: 700; }
+.outcome-na   { color: var(--text-muted); }
+
+/* ── Analytics sub-row ────────────────────────────────────────────────────── */
+.analytics-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+/* ── Risk / bottom row ────────────────────────────────────────────────────── */
+.bottom-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 16px;
+}
+
+/* ── Stat grid (inside cards) ─────────────────────────────────────────────── */
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 20px;
+}
+
+.stat-item {}
+.stat-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+.stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.stat-value.positive { color: var(--accent-green); }
+.stat-value.negative { color: var(--accent-red); }
+
+/* ── Allocation donut label ───────────────────────────────────────────────── */
+.alloc-center {
+  text-align: center;
+  margin-top: -8px;
+}
+
+/* ── Regime bar ───────────────────────────────────────────────────────────── */
+.regime-bar-wrap {
+  margin: 8px 0 4px;
+}
+
+.regime-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.regime-bar-bull     { background: var(--bull-color); }
+.regime-bar-uncertain{ background: var(--uncertain-color); }
+.regime-bar-high-vol { background: var(--high-vol-color); }
+
+.regime-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.regime-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.regime-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+}
+
+/* ── Scrollable signal log ────────────────────────────────────────────────── */
+.signal-log-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.signal-log-scroll::-webkit-scrollbar { width: 4px; }
+.signal-log-scroll::-webkit-scrollbar-track { background: transparent; }
+.signal-log-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+/* ── MTD/YTD chips ────────────────────────────────────────────────────────── */
+.period-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.period-chip {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  text-align: center;
+  min-width: 80px;
+}
+
+.period-chip-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.period-chip-value {
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+/* ── Plotly graph overrides ───────────────────────────────────────────────── */
+.js-plotly-plot .plotly .modebar {
+  background: transparent !important;
+}
+
+.js-plotly-plot .plotly .modebar-btn path {
+  fill: var(--text-muted) !important;
+}
+
+/* ── Current signal block ─────────────────────────────────────────────────── */
+.current-signal-block {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.signal-regime-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.signal-regime-badge.bull     { background: #0d2818; color: var(--bull-color); border: 1px solid var(--bull-color); }
+.signal-regime-badge.uncertain{ background: #2a1e04; color: var(--uncertain-color); border: 1px solid var(--uncertain-color); }
+.signal-regime-badge.high-vol { background: #2d0e0e; color: var(--high-vol-color); border: 1px solid var(--high-vol-color); }
+
+.signal-details { flex: 1; }
+.signal-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #1c2230;
+  font-size: 12px;
+}
+.signal-row:last-child { border-bottom: none; }
+.signal-key { color: var(--text-secondary); }
+.signal-val { color: var(--text-primary); font-weight: 500; }
+
+/* ── Divider ──────────────────────────────────────────────────────────────── */
+hr.section-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0 14px;
+}

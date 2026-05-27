@@ -6,7 +6,7 @@ Primary order type: MOC (Market-on-Close)
   - Fills at the closing auction price — closest analog to the backtested
     execution model ("close" price with 10 bps slippage budget)
 
-Fallback order type: Limit-Close (LMT with tif=OPG/MOC)
+Fallback order type: Limit-Close (LMT with tif=MOC)
   - Used if connected after 15:50 EST but before 15:58 EST
   - Limit price = last price ± slippage buffer
 

@@ -136,6 +136,8 @@ class PositionReconciler:
         try:
             data = yf.download(TQQQ_TICKER, period="1d", interval="1m", progress=False)
             if not data.empty:
+                if isinstance(data.columns, pd.MultiIndex):
+                    data = data.droplevel(1, axis=1)
                 price = float(data["Close"].iloc[-1])
                 logger.info(f"Live TQQQ price: ${price:.2f}")
                 return price

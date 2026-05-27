@@ -7,7 +7,7 @@ Uses mocks throughout — no real IB Gateway connection required.
 Modules tested:
   ibkr/kill_switch.py         — file-based hard stop
   ibkr/state.py               — persistent execution state
-  ibkr/safety_guard.py        — 9 pre-flight safety checks
+  ibkr/safety_guard.py        — 10 pre-flight safety checks
   ibkr/position_reconciler.py — allocation math
   ibkr/order_manager.py       — order construction logic
 

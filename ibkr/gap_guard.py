@@ -136,6 +136,8 @@ class GapGuard:
                 logger.warning("Gap guard: yfinance returned no intraday data")
                 return None
 
+            if isinstance(data.columns, pd.MultiIndex):
+                data = data.droplevel(1, axis=1)
             price = float(data["Open"].iloc[0])
             logger.debug(f"Gap guard: today_open from yfinance = ${price:.2f}")
             return price

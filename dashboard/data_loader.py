@@ -284,6 +284,15 @@ def _load_signals(tqqq_close: pd.Series) -> pd.DataFrame:
         return "~"   # uncertain: no directional call
 
     signals["outcome"] = signals.apply(_outcome, axis=1)
+
+    # Ensure gap columns are always present (added in commit 28622e1).
+    # Older rows that pre-date the gap guard will have NaN/empty here,
+    # which signal_panel.py already handles via r.get("gap_pct", "").
+    if "gap_guard" not in signals.columns:
+        signals["gap_guard"] = ""
+    if "gap_pct" not in signals.columns:
+        signals["gap_pct"] = float("nan")
+
     return signals
 
 

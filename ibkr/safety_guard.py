@@ -37,6 +37,7 @@ from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import pytz
 import yfinance as yf
 
@@ -263,6 +264,8 @@ class SafetyGuard:
                 logger.warning("Could not fetch live TQQQ price for daily loss check")
                 return GuardResult(blocked=False)
 
+            if isinstance(data.columns, pd.MultiIndex):
+                data = data.droplevel(1, axis=1)
             current_price = float(data["Close"].iloc[-1])
             daily_loss    = (last_fill - current_price) / last_fill
             limit         = RISK_CONFIG["daily_stop_loss"]
@@ -321,6 +324,8 @@ class SafetyGuard:
                 logger.warning("Could not fetch live VIX — skipping extreme check")
                 return GuardResult(blocked=False)
 
+            if isinstance(data.columns, pd.MultiIndex):
+                data = data.droplevel(1, axis=1)
             live_vix = float(data["Close"].iloc[-1])
             logger.info(f"Live VIX: {live_vix:.1f}  (extreme threshold: {VIX_EXTREME})")
 

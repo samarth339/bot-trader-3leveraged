@@ -72,7 +72,7 @@ TRADES_CSV       = LOG_DIR / "paper_trades.csv"
 KILL_SWITCH_PATH = LOG_DIR / "ibkr_kill.flag"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-SEED_CAPITAL     = 5_877.05      # paper account NLV from IB Gateway dry-run
+SEED_CAPITAL     = 10_000.00     # paper trading seed capital
 SLIPPAGE_BPS     = EXECUTION_CONFIG["slippage_bps"]   # 10 bps round-trip
 DRIFT_THRESHOLD  = RISK_CONFIG["alloc_drift_rebalance"]
 DD_HALT          = RISK_CONFIG["max_drawdown_halt"]

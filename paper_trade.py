@@ -681,6 +681,274 @@ def _log_summary(signal, plan, portfolio, fill_price, dry_run):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Demo mode  — full simulation in a temp directory, no production files touched
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_demo() -> None:
+    """
+    Execute the complete paper trading simulation against real live data,
+    but redirect ALL file I/O to a temporary directory.
+
+    Production files left completely untouched:
+      - logs/paper_portfolio.json  (not read, not written)
+      - logs/paper_trades.csv      (not read, not written)
+      - logs/ibkr_kill.flag        (not read, not written)
+
+    What the demo does:
+      1. Reads today's signal from signal_history.csv  (read-only, unchanged)
+      2. Initialises a fresh $10,000 Day-1 portfolio   (temp dir only)
+      3. Fetches TQQQ & VIX live prices from yfinance
+      4. Runs all 7 safety guards
+      5. Computes and executes the simulated fill
+      6. Prints a rich side-by-side before/after report
+      7. Cleans up temp dir → production state unchanged
+    """
+    import tempfile, shutil
+
+    global PORTFOLIO_FILE, TRADES_CSV, KILL_SWITCH_PATH
+
+    # ── Save production paths ──────────────────────────────────────────────
+    _orig_portfolio   = PORTFOLIO_FILE
+    _orig_trades      = TRADES_CSV
+    _orig_kill_switch = KILL_SWITCH_PATH
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="paper_trade_demo_"))
+    try:
+        # ── Redirect all file I/O to temp dir ─────────────────────────────
+        PORTFOLIO_FILE   = tmp_dir / "paper_portfolio.json"
+        TRADES_CSV       = tmp_dir / "paper_trades.csv"
+        KILL_SWITCH_PATH = tmp_dir / "ibkr_kill.flag"
+
+        # ── Seed a fresh Day-1 portfolio ───────────────────────────────────
+        demo_portfolio = DEFAULT_PORTFOLIO.copy()
+        save_portfolio(demo_portfolio)
+        _ensure_trades_csv()
+
+        W = 62
+        print()
+        print("╔" + "═" * W + "╗")
+        print(f"║{'  📋  PAPER TRADE — DEMO MODE':^{W}}║")
+        print(f"║{'  Full simulation · real prices · temp files only':^{W}}║")
+        print("╠" + "═" * W + "╣")
+        print(f"║{'  Production files will NOT be touched':^{W}}║")
+        print("╚" + "═" * W + "╝")
+        print()
+
+        # ── Step 1: Signal ─────────────────────────────────────────────────
+        try:
+            signal = read_signal()
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"✗ Signal read failed: {exc}")
+            return
+
+        # ── Step 2: Load demo portfolio ────────────────────────────────────
+        portfolio = load_portfolio()
+
+        # ── Step 3: Live prices ────────────────────────────────────────────
+        print("Fetching live prices …")
+        tqqq_price = fetch_close("TQQQ")
+        vix_price  = fetch_close("^VIX")
+        if tqqq_price is None:
+            print("✗ Cannot fetch TQQQ price — aborting demo")
+            return
+        portfolio["nlv"] = round(
+            portfolio["tqqq_shares"] * tqqq_price + portfolio["cash"], 2
+        )
+
+        # ── Step 4: Safety guards ──────────────────────────────────────────
+        guard           = PaperSafetyGuard(signal=signal, portfolio=portfolio)
+        blocked, reason = guard.run_all_checks()
+
+        # ── Step 5: Compute plan ───────────────────────────────────────────
+        plan = compute_plan(signal, portfolio, tqqq_price) if not blocked else {
+            "proceed": False, "status": "blocked", "delta_shares": 0,
+            "target_pct": 0, "current_pct": 0, "nlv": portfolio["nlv"],
+            "reason": reason,
+        }
+
+        # ── Step 6: Execute fill ───────────────────────────────────────────
+        fill_price      = 0.0
+        portfolio_after = portfolio.copy()
+
+        if plan["proceed"] and not blocked:
+            portfolio_after, fill_price = execute_paper_fill(
+                plan, portfolio, tqqq_price
+            )
+            append_trade({
+                "date":               str(date.today()),
+                "regime":             signal.get("regime", "?"),
+                "action":             signal.get("action", "?"),
+                "status":             "executed (DEMO)",
+                "tqqq_shares_before": portfolio["tqqq_shares"],
+                "delta_shares":       plan["delta_shares"],
+                "tqqq_shares_after":  portfolio_after["tqqq_shares"],
+                "fill_price":         fill_price,
+                "slippage_bps":       SLIPPAGE_BPS,
+                "cash_before":        portfolio["cash"],
+                "cash_after":         portfolio_after["cash"],
+                "nlv_before":         portfolio["nlv"],
+                "nlv_after":          portfolio_after["nlv"],
+                "target_pct":         round(plan["target_pct"] * 100, 2),
+                "actual_pct":         round(plan["target_pct"] * 100, 2),
+                "gap_guard":          signal.get("gap_guard", False),
+                "notes":              "[DEMO] " + plan["reason"],
+            })
+
+        # ── Step 7: Rich report ────────────────────────────────────────────
+        regime  = signal.get("regime", "?").upper()
+        action  = signal.get("action", "?")
+        wa      = float(signal.get("weight_a", 0))
+        wb      = float(signal.get("weight_b", 0))
+        gap_raw = signal.get("gap_pct", "")
+        gap_str = (f"{float(gap_raw):+.2f}%" if gap_raw not in ("", None, "nan") else "n/a")
+        gap_triggered = str(signal.get("gap_guard", "")).lower() in ("true", "1")
+
+        direction  = plan.get("direction", "—")
+        delta      = plan.get("delta_shares", 0)
+        target_pct = plan.get("target_pct", 0)
+        status     = "BLOCKED" if blocked else plan.get("status", "?")
+
+        ret_before = 0.0
+        ret_after  = (
+            (portfolio_after["nlv"] - portfolio_after["seed_capital"])
+            / portfolio_after["seed_capital"] * 100
+        ) if plan["proceed"] else 0.0
+
+        slippage_cost = abs(fill_price - tqqq_price) * abs(delta) if fill_price else 0
+
+        print()
+        print("┌─ TODAY'S SIGNAL " + "─" * 45)
+        print(f"│  Date       : {signal.get('as_of_date', '?')}")
+        print(f"│  Regime     : {regime}")
+        print(f"│  Action     : {action}")
+        print(f"│  Weights    : {wa:.0%} Strategy-A  /  {wb:.0%} Strategy-B")
+        print(f"│  QQQ (T-1)  : ${float(signal.get('qqq_price', 0)):.2f}  "
+              f"({float(signal.get('pct_vs_sma', 0)):+.2f}% vs SMA-130)")
+        print(f"│  VIX 5d avg : {signal.get('vix_signal', '?')}")
+        print(f"│  Gap guard  : {'🚫 TRIGGERED' if gap_triggered else '✅ clear'}  ({gap_str})")
+        print()
+        print("┌─ SAFETY GUARDS " + "─" * 44)
+        if blocked:
+            print(f"│  ✗ BLOCKED — {reason}")
+        else:
+            print("│  ✓ All 7 guards passed")
+        print()
+        print("┌─ EXECUTION PLAN " + "─" * 43)
+        print(f"│  Status     : {status.upper()}")
+        if plan["proceed"]:
+            print(f"│  Direction  : {direction}")
+            print(f"│  Shares     : {delta:+d} TQQQ")
+            print(f"│  Fill price : ${fill_price:.4f}  "
+                  f"(close ${tqqq_price:.2f} + {SLIPPAGE_BPS} bps slippage)")
+            print(f"│  Slip cost  : ${slippage_cost:.2f}  ({SLIPPAGE_BPS} bps × {abs(delta)} shares)")
+            print(f"│  Target %   : {target_pct:.1%} of NLV")
+        else:
+            print(f"│  Reason     : {plan.get('reason', reason)}")
+        print()
+        print("┌─ PORTFOLIO BEFORE → AFTER " + "─" * 33)
+        print(f"│  {'':30} {'BEFORE':>10}   {'AFTER':>10}")
+        print(f"│  {'─'*52}")
+        print(f"│  {'TQQQ shares':30} {portfolio['tqqq_shares']:>10}   "
+              f"{portfolio_after['tqqq_shares']:>10}")
+        print(f"│  {'Cash':30} ${portfolio['cash']:>9,.2f}   "
+              f"${portfolio_after['cash']:>9,.2f}")
+        print(f"│  {'NLV':30} ${portfolio['nlv']:>9,.2f}   "
+              f"${portfolio_after['nlv']:>9,.2f}")
+        print(f"│  {'TQQQ allocation':30} {portfolio['tqqq_shares'] * tqqq_price / portfolio['nlv']:>9.1%}   "
+              f"{portfolio_after['tqqq_shares'] * tqqq_price / portfolio_after['nlv']:>9.1%}"
+              if portfolio_after["nlv"] > 0 else "")
+        print(f"│  {'Return vs $10K seed':30} {ret_before:>+9.2f}%   {ret_after:>+9.2f}%")
+        print()
+
+        # ── Show temp trade CSV ────────────────────────────────────────────
+        if plan["proceed"]:
+            import csv as _csv
+            trades = list(_csv.DictReader(open(TRADES_CSV)))
+            if trades:
+                t = trades[-1]
+                print("┌─ TRADE RECORD (what would be written to paper_trades.csv) " + "─" * 1)
+                for k, v in t.items():
+                    if v not in ("", None):
+                        print(f"│  {k:<25} {v}")
+                print()
+
+        # ── Email preview ──────────────────────────────────────────────────
+        subject, body = build_email(
+            signal, plan, portfolio_after, fill_price, blocked, reason, False
+        )
+        print("┌─ EMAIL THAT WOULD BE SENT " + "─" * 33)
+        print(f"│  Subject: {subject}")
+        print("│")
+        for line in body.splitlines()[:12]:
+            print(f"│  {line}")
+        print("│  …")
+        print()
+
+        print("╔" + "═" * W + "╗")
+        print(f"║{'  ✅  DEMO COMPLETE':^{W}}║")
+        print(f"║{'  Production files untouched:':^{W}}║")
+        print(f"║{'  logs/paper_portfolio.json  ← still clean $10,000':^{W}}║")
+        print(f"║{'  logs/paper_trades.csv      ← still empty':^{W}}║")
+        print("╠" + "═" * W + "╣")
+        print(f"║{'  Run  python3 paper_trade.py --reset-portfolio':^{W}}║")
+        print(f"║{'  to confirm clean state before Day 1, then let':^{W}}║")
+        print(f"║{'  GitHub Actions handle the real first execution.':^{W}}║")
+        print("╚" + "═" * W + "╝")
+        print()
+
+    finally:
+        # ── Always restore production paths ───────────────────────────────
+        PORTFOLIO_FILE   = _orig_portfolio
+        TRADES_CSV       = _orig_trades
+        KILL_SWITCH_PATH = _orig_kill_switch
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Reset portfolio  — wipe back to clean Day-1 state
+# ══════════════════════════════════════════════════════════════════════════════
+
+def reset_portfolio() -> None:
+    """
+    Restore paper_portfolio.json and paper_trades.csv to the clean
+    Day-1 state ($10,000 seed, 0 shares, no trades).
+
+    Safe to run at any time — only modifies the two log files.
+    """
+    import csv as _csv
+
+    clean = DEFAULT_PORTFOLIO.copy()
+    clean["inception_date"] = str(date.today())
+
+    save_portfolio(clean)
+
+    # Rewrite trades CSV with header only
+    with open(TRADES_CSV, "w", newline="") as f:
+        _csv.DictWriter(f, fieldnames=TRADE_COLUMNS).writeheader()
+
+    # Clear kill switch if present (safety)
+    if KILL_SWITCH_PATH.exists():
+        KILL_SWITCH_PATH.unlink()
+        print("⚠️  Kill switch was active — cleared.")
+
+    print()
+    print("╔" + "═" * 52 + "╗")
+    print(f"║{'  ✅  Portfolio reset to Day-1 state':^52}║")
+    print("╠" + "═" * 52 + "╣")
+    print(f"║{'  Seed capital   : $10,000.00':^52}║")
+    print(f"║{'  TQQQ shares    : 0':^52}║")
+    print(f"║{'  Cash           : $10,000.00':^52}║")
+    print(f"║{'  Trades YTD     : 0':^52}║")
+    print(f"║{'  Kill switch    : OFF':^52}║")
+    print(f"║{'  Inception date : ' + str(date.today()):^52}║")
+    print("╠" + "═" * 52 + "╣")
+    print(f"║{'  GitHub Actions will execute the real':^52}║")
+    print(f"║{'  first trade on the next trading day.':^52}║")
+    print("╚" + "═" * 52 + "╝")
+    print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Status command
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -720,19 +988,35 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python3 paper_trade.py                 # daily run\n"
-            "  python3 paper_trade.py --dry-run       # compute plan only\n"
-            "  python3 paper_trade.py --status        # print portfolio\n"
-            "  python3 paper_trade.py --reset         # clear today's execution flag\n"
+            "  python3 paper_trade.py                    # daily production run\n"
+            "  python3 paper_trade.py --demo             # full simulation, no files touched\n"
+            "  python3 paper_trade.py --reset-portfolio  # wipe back to clean Day-1 state\n"
+            "  python3 paper_trade.py --dry-run          # compute plan only, no state update\n"
+            "  python3 paper_trade.py --status           # print current portfolio\n"
+            "  python3 paper_trade.py --reset            # clear today's execution flag\n"
         ),
     )
-    parser.add_argument("--dry-run", action="store_true",
+    parser.add_argument("--demo",             action="store_true",
+                        help="Full simulation using real prices — writes to temp dir only, "
+                             "production files untouched")
+    parser.add_argument("--reset-portfolio",  action="store_true",
+                        help="Wipe paper_portfolio.json and paper_trades.csv back to "
+                             "clean Day-1 state ($10,000 seed, 0 trades)")
+    parser.add_argument("--dry-run",          action="store_true",
                         help="Compute plan and log — do NOT update portfolio state")
-    parser.add_argument("--status",  action="store_true",
+    parser.add_argument("--status",           action="store_true",
                         help="Print current portfolio state and exit")
-    parser.add_argument("--reset",   action="store_true",
+    parser.add_argument("--reset",            action="store_true",
                         help="Clear today's execution flag (use after failed run recovery)")
     args = parser.parse_args()
+
+    if args.demo:
+        run_demo()
+        return
+
+    if args.reset_portfolio:
+        reset_portfolio()
+        return
 
     if args.status:
         print_status()

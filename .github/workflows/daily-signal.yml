@@ -1,0 +1,136 @@
+name: Phase 4 — Daily Signal Generation
+
+# Runs every weekday at ~3:30 PM EDT (19:30 UTC, UTC-4 summer).
+# Refreshes market data, generates the live T-1 signal (no --shadow),
+# and commits the updated signal_history.csv back to main.
+# The paper-trade.yml workflow runs 30 minutes later at ~4:00 PM EDT.
+#
+# DST note: cron is in UTC.
+#   EDT (Mar–Nov): 19:30 UTC = 3:30 PM ET  ← current
+#   EST (Nov–Mar): 19:30 UTC = 2:30 PM ET  → update to 20:30 when DST ends
+
+on:
+  schedule:
+    - cron: "30 19 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date_override:
+        description: "Back-calculate for specific date (YYYY-MM-DD, leave blank for today)"
+        required: false
+        default: ""
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  PYTHONDONTWRITEBYTECODE: 1
+
+jobs:
+  generate-signal:
+    name: Refresh Data + Generate Live Signal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      # Cache processed data so full historical re-fetch is rare.
+      # Key includes month so cache refreshes monthly even without code changes.
+      - name: Restore cached market data
+        id: cache-data
+        uses: actions/cache@v4
+        with:
+          path: data/processed/
+          key: market-data-${{ hashFiles('data/fetch_data.py') }}-${{ env.YYYYMM }}
+          restore-keys: market-data-
+        env:
+          YYYYMM: ${{ format('{0}-{1}', github.run_number, 'monthly') }}
+
+      - name: Refresh market data
+        run: python3 data/fetch_data.py
+
+      - name: Generate live signal
+        run: |
+          if [ -n "${{ github.event.inputs.date_override }}" ]; then
+            python3 daily_signal.py --date "${{ github.event.inputs.date_override }}"
+          else
+            # No --shadow: Phase 4 is live paper trading
+            python3 daily_signal.py
+          fi
+
+      - name: Write job summary
+        if: always()
+        run: |
+          python3 - <<'PYEOF'
+          import csv, os
+          from pathlib import Path
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          rows = []
+          path = Path("logs/signal_history.csv")
+          if path.exists():
+              with open(path) as f:
+                  rows = list(csv.DictReader(f))
+
+          latest = rows[-1] if rows else {}
+          regime = latest.get("regime", "—")
+          emoji  = {"bull": "🐂", "uncertain": "⚠️", "high_vol": "🔴"}.get(regime, "❓")
+          gap_status = "🚫 TRIGGERED" if str(latest.get("gap_guard","")).lower() in ("true","1") else "✅ clear"
+          gap_pct = latest.get("gap_pct","—")
+
+          lines = [
+              f"## {emoji} Daily Signal — {latest.get('as_of_date','—')}",
+              "",
+              "| Field | Value |",
+              "|---|---|",
+              f"| Regime | **{emoji} {regime.upper()}** |",
+              f"| Action | `{latest.get('action','—')}` |",
+              f"| Allocation | {int(float(latest.get('weight_a',0.5))*100)}% A / {int(float(latest.get('weight_b',0.5))*100)}% B |",
+              f"| QQQ (T-1) | ${float(latest.get('qqq_price',0)):.2f} |",
+              f"| % vs SMA-130 | {latest.get('pct_vs_sma','—')}% |",
+              f"| VIX raw | {latest.get('vix_raw','—')} |",
+              f"| VIX smoothed (5d) | {latest.get('vix_signal','—')} |",
+              f"| Gap guard | {gap_status} ({gap_pct}%) |",
+              f"| Shadow | {latest.get('shadow','—')} |",
+              "",
+              "> 📬 Paper trade execution runs ~30 min after this workflow completes.",
+          ]
+          with open(summary, "a") as f:
+              f.write("\n".join(lines) + "\n")
+          print("Job summary written.")
+          PYEOF
+
+      - name: Pull latest to avoid push conflicts
+        run: |
+          git fetch origin main
+          git rebase origin/main || git rebase --abort
+
+      - name: Commit updated signal log
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add logs/signal_history.csv
+          if git diff --cached --quiet; then
+            echo "No signal changes to commit (holiday or duplicate run)."
+          else
+            TODAY=$(date -u '+%Y-%m-%d')
+            git commit -m "signal: daily update ${TODAY} [skip ci]"
+            git push
+            echo "Signal log committed to main."
+          fi

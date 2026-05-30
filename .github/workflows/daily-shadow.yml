@@ -1,11 +1,12 @@
-name: Daily Shadow Run
+name: Daily Shadow Run  [ARCHIVED — Phase 3 complete 2026-05-29]
 
-# Runs every weekday at 4:30 PM EST (21:30 UTC) — always after NYSE close.
-# In summer (EDT = UTC-4) this fires at 5:30 PM local, still post-market.
-# Manual trigger available for testing or catch-up runs.
+# ── DISABLED — Phase 3 shadow mode completed after 42 days. ──────────────────
+# Replaced by:
+#   .github/workflows/daily-signal.yml  (Phase 4 live signal, 3:30 PM ET)
+#   .github/workflows/paper-trade.yml   (Phase 4 paper execution, 4:00 PM ET)
+# Schedule removed; workflow kept for audit history.
 on:
-  schedule:
-    - cron: "30 21 * * 1-5"
+  workflow_dispatch:   # manual-only (schedule removed)
   workflow_dispatch:
     inputs:
       force_run:

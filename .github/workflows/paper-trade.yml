@@ -1,0 +1,167 @@
+name: Phase 4 — Paper Trade Execution
+
+# Runs every weekday at ~4:00 PM EDT (20:00 UTC, UTC-4 summer).
+# Waits until after market close so fills use the actual TQQQ closing price.
+# Simulates a MOC order: no IB Gateway required.
+#
+# DST note: cron is in UTC.
+#   EDT (Mar–Nov): 20:00 UTC = 4:00 PM ET  ← current
+#   EST (Nov–Mar): 20:00 UTC = 3:00 PM ET  → update to 21:00 when DST ends
+
+on:
+  schedule:
+    - cron: "0 20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — compute plan but do NOT update portfolio state"
+        required: false
+        default: "false"
+        type: boolean
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  PYTHONDONTWRITEBYTECODE: 1
+
+jobs:
+  paper-trade:
+    name: Simulate MOC Paper Trade
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Run paper trade simulation
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 paper_trade.py --dry-run
+          else
+            python3 paper_trade.py
+          fi
+
+      - name: Write job summary
+        if: always()
+        run: |
+          python3 - <<'PYEOF'
+          import json, csv, os
+          from pathlib import Path
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          port    = Path("logs/paper_portfolio.json")
+          trades  = Path("logs/paper_trades.csv")
+
+          state = json.loads(port.read_text()) if port.exists() else {}
+          shares    = state.get("tqqq_shares", 0)
+          cash      = state.get("cash", 0)
+          nlv       = state.get("nlv", cash)
+          seed      = state.get("seed_capital", 5877.05)
+          peak      = state.get("peak_equity", nlv)
+          drawdown  = (peak - nlv) / peak if peak > 0 else 0
+          ret_pct   = (nlv - seed) / seed * 100 if seed > 0 else 0
+          n_trades  = state.get("total_trades_ytd", 0)
+          last_fill = state.get("last_fill_price", 0)
+
+          trade_rows = []
+          if trades.exists():
+              with open(trades) as f:
+                  trade_rows = list(csv.DictReader(f))
+          latest_trade = trade_rows[-1] if trade_rows else {}
+
+          action    = latest_trade.get("action", "—")
+          delta     = latest_trade.get("delta_shares", "—")
+          status    = latest_trade.get("status", "—")
+          fill      = latest_trade.get("fill_price", "—")
+          slip      = latest_trade.get("slippage_bps", "—")
+
+          emoji_ret = "📈" if ret_pct >= 0 else "📉"
+          emoji_act = {"no_action": "⏸️", "buy": "🟢", "sell": "🔴"}.get(
+              str(action).lower(), "⚙️"
+          )
+
+          lines = [
+              f"## {emoji_act} Paper Trade — {latest_trade.get('date','—')}",
+              "",
+              "### Today's Execution",
+              "| Field | Value |",
+              "|---|---|",
+              f"| Status | `{status}` |",
+              f"| Action | `{action}` |",
+              f"| Shares delta | {delta} TQQQ |",
+              f"| Fill price | ${float(fill):.2f} |" if fill not in ("—","") else f"| Fill price | — |",
+              f"| Slippage | {slip} bps |",
+              "",
+              "### Paper Portfolio",
+              "| | |",
+              "|---|---|",
+              f"| TQQQ shares | {shares} |",
+              f"| Cash | ${cash:,.2f} |",
+              f"| NLV | ${nlv:,.2f} |",
+              f"| Seed capital | ${seed:,.2f} |",
+              f"| {emoji_ret} Return | {ret_pct:+.2f}% |",
+              f"| Max drawdown | {drawdown:.1%} |",
+              f"| Trades YTD | {n_trades} |",
+              f"| Last fill | ${last_fill:.2f} |" if last_fill else f"| Last fill | — |",
+              "",
+              "### Recent Trades",
+              "| Date | Action | Δ Shares | Fill | NLV after |",
+              "|---|---|---|---|---|",
+          ]
+          for r in trade_rows[-7:]:
+              fp = r.get("fill_price","—")
+              fp_str = f"${float(fp):.2f}" if fp not in ("—","") else "—"
+              lines.append(
+                  f"| {r.get('date','—')} "
+                  f"| {r.get('action','—')} "
+                  f"| {r.get('delta_shares','—')} "
+                  f"| {fp_str} "
+                  f"| ${float(r.get('nlv_after',0)):,.2f} |"
+              )
+
+          with open(summary, "a") as f:
+              f.write("\n".join(lines) + "\n")
+          print("Job summary written.")
+          PYEOF
+
+      - name: Pull latest before committing
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git fetch origin main
+          git rebase origin/main || git rebase --abort
+
+      - name: Commit paper portfolio state
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add logs/paper_portfolio.json logs/paper_trades.csv logs/signal_history.csv
+          if git diff --cached --quiet; then
+            echo "No portfolio changes to commit."
+          else
+            TODAY=$(date -u '+%Y-%m-%d')
+            git commit -m "paper: trade execution ${TODAY} [skip ci]"
+            git push
+            echo "Paper portfolio state committed."
+          fi

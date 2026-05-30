@@ -62,8 +62,15 @@ logs/dual_production.csv
 
 # Runtime-only logs (not needed in repo history)
 logs/daily_signal.log
+logs/paper_trade.log
 logs/pending_email.json
 logs/pending_weekly_email.json
+# Phase 4 local IBKR execution logs (machine-local only)
+logs/ibkr_execution.log
+logs/launchd_phase4.log
+logs/launchd_phase4_err.log
+logs/phase4_dryrun.log
+logs/phase4_run.log
 
 # Backup files
 *.bak

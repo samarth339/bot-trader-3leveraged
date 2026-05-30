@@ -1,5 +1,5 @@
 # CI-only dependencies — lean subset of requirements.txt
-# Excludes: Jupyter, ib-insync (not needed for shadow runs or unit tests)
+# Excludes: Jupyter, ib-insync (not needed for signal runs or unit tests)
 pandas>=2.0.0
 numpy>=1.24.0
 yfinance>=0.2.36
@@ -9,7 +9,12 @@ ta>=0.10.2
 pytz>=2023.3
 tqdm>=4.65.0
 python-dotenv>=1.0.0
-pandas-market-calendars>=4.1.4   # NYSE trading-day guard in shadow_mode.py
+pandas-market-calendars>=4.1.4   # NYSE trading-day guard
+
+# Dashboard (needed for test_dashboard_signal_panel + test_dashboard_data_loader)
+dash>=2.14.0
+plotly>=5.18.0
+dash-bootstrap-components>=1.5.0
 
 # Test runner
 pytest>=7.4.0

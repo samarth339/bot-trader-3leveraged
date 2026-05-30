@@ -1,0 +1,1 @@
+date,regime,action,status,tqqq_shares_before,delta_shares,tqqq_shares_after,fill_price,slippage_bps,cash_before,cash_after,nlv_before,nlv_after,target_pct,actual_pct,gap_guard,notes

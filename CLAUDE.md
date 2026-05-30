@@ -5,8 +5,8 @@
 
 ## What This Project Is
 A systematic trading bot trading **TQQQ** (3x long NASDAQ) and **SQQQ** (3x short NASDAQ),
-using **QQQ** as the clean signal source. Currently in **Phase 3 shadow mode** (30-day
-live observation, no real trades). Goal: $775K+ from $5K seed over ~10 years.
+using **QQQ** as the clean signal source. Currently in **Phase 4 paper trading** (IB Gateway
+paper account DUP540674, MOC orders daily at 3:45 PM ET). Goal: $775K+ from $5K seed over ~10 years.
 
 ---
 
@@ -168,11 +168,11 @@ python3 stress_test_robustness.py --no-chart
 
 ---
 
-## Current Status (as of 2026-03-28 — Phase 1 & 2 Complete, Phase 3 Active)
+## Current Status (as of 2026-05-29 — Phase 4 Active)
 
 | Item | Status |
 |---|---|
-| Tests | 231/231 passing (1 skipped) |
+| Tests | **432/432 passing** (1 skipped) — 19 test modules |
 | **Phase 1: Parameter Optimization** | ✅ **COMPLETE** — 547 experiments, 0.4964 → 0.6564 (+32.2%) |
 | — v1 (388 exps) | 14 wins, parameter ceiling reached on allocations |
 | — v2 (158 exps, defensive focus) | 0 wins, confirmed all major levers exhausted |
@@ -180,24 +180,29 @@ python3 stress_test_robustness.py --no-chart
 | — Opportunity #1: Adaptive VIX | ❌ Hypothesis disproven — baseline optimal on all periods |
 | Robustness tests | ✅ 4/6 pass — OOS Calmar 0.310 (below 0.40 target, known issue) |
 | Config locked | ✅ config/strategy_config.py is immutable baseline (score 0.6564) |
-| **Phase 3: Shadow Mode** | 🔄 **ACTIVE** — Day 15/30 (as of 2026-04-16) |
-| Scheduled tasks | ✅ Both enabled (bot-daily-shadow-run, bot-weekly-tests) |
-| Shadow regime summary | 10 days high_vol (Mar 27–Apr 9) → 5 days uncertain (Apr 10–16, VIX declining) |
-| **Next action** | Monitor to ~2026-04-28 (day 30) → then authorize Phase 4 (paper trading) |
+| **Phase 3: Shadow Mode** | ✅ **COMPLETE** — 42 days observed (exceeded 30-day target) |
+| Shadow regime summary | 10 days high_vol → 5 days uncertain → 27 days bull (Apr–May 2026) |
+| **Phase 4: Paper Trading** | 🔄 **ACTIVE** — as of 2026-05-29 |
+| Paper account | DUP540674 · NLV $5,877 (seed capital, fully in cash) |
+| Scheduled tasks | ✅ 3 tasks enabled (signal 3:30 PM, execute 3:45 PM, weekly tests 9 AM Mon) |
+| **Next action** | Monitor paper fills, slippage, and guard behaviour → authorize Phase 5 after ~30 days |
 
 ---
 
 ## Scheduled Tasks (Claude Code Scheduled panel)
 
-| Task ID | Schedule | What it does |
-|---|---|---|
-| `bot-daily-shadow-run` | Weekdays 4:30 PM | Runs shadow_mode.py + emails anomalies/regime changes |
-| `bot-weekly-tests` | Monday 9:00 AM | Runs full pytest suite + emails results |
+| Task ID | Cron | Fires ~ET | What it does |
+|---|---|---|---|
+| `bot-phase4-signal` | `22 15 * * 1-5` | 3:30 PM weekdays | Refresh data + `daily_signal.py` (live, no --shadow) |
+| `bot-phase4-execute` | `37 15 * * 1-5` | 3:45 PM weekdays | `python -m ibkr.executor --paper` → MOC order on paper account |
+| `bot-weekly-tests` | `0 9 * * 1` | 9:05 AM Monday | Full pytest suite (432 tests) + email on failure |
 
-**Status:** ✅ Both tasks are **active and running**.
-- `bot-daily-shadow-run` last ran: 2026-03-27 (weekdays 4:31 PM ET), next: 2026-03-30
-- `bot-weekly-tests` last ran: 2026-03-24 (Mondays 9:05 AM ET), next: 2026-03-30
-Email destination: **samarth339@gmail.com**
+**Notes:**
+- Scheduler adds ~5–8 min dispatch delay — cron times are adjusted to compensate
+- Signal must complete before execute fires (signal: ~3:30 PM, execute: ~3:45 PM, 15-min buffer)
+- IB Gateway must be running on localhost:4002 for execute task — auto-restart recommended
+- MOC deadline is 3:50 PM; limit-close fallback activates if past that window
+- Email destination: **samarth339@gmail.com**
 
 ---
 
@@ -236,8 +241,8 @@ VIX 5-day avg (T-1) ──► threshold check ──────┘
 | Phase 1b | ✅ Done | Strategy dev, grid search, LongOnlyGuard winner, drawdown reduction |
 | Phase 1c | ✅ Done | **Hyperparameter optimization** — 547 experiments, parameter space exhausted |
 | Phase 2 | ✅ Done | **Architecture search** — Tested Adaptive VIX Thresholds, hypothesis disproven |
-| Phase 3 | 🔄 Active | **Shadow mode** — Daily signals, regime tracking, email alerts |
-| Phase 4 | ⏳ Pending | Paper trading (mock fills, slippage tracking) |
+| Phase 3 | ✅ Done | **Shadow mode** — 42 days observed, all signals validated |
+| Phase 4 | 🔄 Active | **Paper trading** — IB Gateway paper account, daily MOC orders at 3:45 PM ET |
 | Phase 5 | ⏳ Pending | Live trading, small size (10% of capital), kill switch |
 
 ---

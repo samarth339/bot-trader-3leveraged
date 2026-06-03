@@ -149,7 +149,7 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         run: |
           git fetch origin main
-          git rebase origin/main || git rebase --abort
+          git rebase --autostash origin/main
 
       - name: Commit paper portfolio state
         if: github.event.inputs.dry_run != 'true'

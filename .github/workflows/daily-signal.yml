@@ -119,7 +119,7 @@ jobs:
       - name: Pull latest to avoid push conflicts
         run: |
           git fetch origin main
-          git rebase origin/main || git rebase --abort
+          git rebase --autostash origin/main
 
       - name: Commit updated signal log
         run: |

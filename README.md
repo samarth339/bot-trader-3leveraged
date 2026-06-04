@@ -286,61 +286,17 @@ The **Gap** column in the signal table shows:
 
 ## GitHub Actions — Remote Automation
 
-Signal generation runs on GitHub-hosted runners (no local machine needed).
-Paper trade execution runs on a **self-hosted runner** on your Mac — IB Gateway must be reachable on `localhost:4002`.
-
-### Self-Hosted Runner Setup (one-time, ~5 minutes)
-
-The execution workflow needs to reach IB Gateway on your Mac. A self-hosted runner lets GitHub Actions trigger jobs that run locally.
-
-**Step 1 — Register the runner**
-
-Go to: **github.com/samarth339/bot-trader-3leveraged → Settings → Actions → Runners → New self-hosted runner**
-
-Choose **macOS**, then run the commands GitHub shows. They look like:
-
-```bash
-mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o actions-runner-osx-arm64.tar.gz -L https://github.com/actions/runner/releases/download/v2.x.x/...
-tar xzf ./actions-runner-osx-arm64.tar.gz
-./config.sh --url https://github.com/samarth339/bot-trader-3leveraged --token <TOKEN>
-```
-
-When prompted for labels, add: `self-hosted,macos`
-
-**Step 2 — Install as a background service**
-
-```bash
-cd ~/actions-runner
-./svc.sh install
-./svc.sh start
-```
-
-The runner now starts automatically on login and stays running in the background.
-
-**Step 3 — Verify it's online**
-
-```bash
-./svc.sh status
-```
-
-You should also see it appear as **Idle** in GitHub → Settings → Actions → Runners.
-
-**Step 4 — Keep IB Gateway open before 3:45 PM ET on weekdays**
-
-That's it. When the `paper-trade.yml` cron fires, the runner picks it up, checks IB Gateway is reachable, and submits the MOC order.
-
----
+All automation runs on **GitHub-hosted runners** — no local machine required for Phase 4.
 
 ### Workflow schedule
 
-| Workflow | Runner | Cron (UTC) | Fires ~ET | What it does |
-|---|---|---|---|---|
-| `daily-signal.yml` | GitHub-hosted | `30 19 * * 1-5` | 3:30 PM EDT | Data refresh → `daily_signal.py` → commits `signal_history.csv` |
-| `paper-trade.yml` | **self-hosted (your Mac)** | `37 19 * * 1-5` | 3:45 PM EDT | `ibkr.executor --paper` → real MOC order on DUP540674 via IB Gateway |
-| `ci.yml` | GitHub-hosted | on push + Mon 2 PM UTC | — | 432 tests across 7 parallel jobs |
+| Workflow | Cron (UTC) | Fires ~ET | What it does |
+|---|---|---|---|
+| `daily-signal.yml` | `30 19 * * 1-5` | 3:30 PM EDT | Data refresh → `daily_signal.py` → commits `signal_history.csv` |
+| `paper-trade.yml` | `0 20 * * 1-5` | 4:00 PM EDT | `paper_trade.py` → simulates fill at actual close → commits portfolio state → sends email |
+| `ci.yml` | on push + Mon 2 PM UTC | — | 432 tests across 7 parallel jobs |
 
-> **DST note:** Crons are in UTC. When clocks fall back in November (EDT → EST), update `37 19` → `37 20` in `paper-trade.yml`.
+> **DST note:** Crons are in UTC. When clocks fall back in November (EDT → EST), update `19`/`20` → `20`/`21` in both workflow files.
 
 ### Required GitHub Secrets
 
@@ -554,26 +510,58 @@ bot-trader-3leveraged/
 
 ### Switching to Phase 5 (live trading)
 
-Three changes required:
+IB Gateway is a desktop application — it cannot run on GitHub's servers. For fully automated live execution with no local machine dependency, the solution is **ibeam on a VPS**.
 
-**1. Update execution script in `paper-trade.yml`:**
-```yaml
-# Replace:
-- run: python3 paper_trade.py
-# With:
-- run: python3 -m ibkr.executor --live
+#### Why you can't use GitHub-hosted runners for live execution
+
+GitHub Actions runners are ephemeral cloud VMs. IB Gateway requires:
+- A persistent machine that's always on
+- Active IBKR authentication (session re-auth ~monthly)
+- Network port 4001/4002 accessible to the executor
+
+#### Recommended setup: ibeam + VPS (~$6/month)
+
+[ibeam](https://github.com/Voyz/ibeam) is a Docker wrapper around IB Gateway that handles headless authentication. Run it on a $4–6/month cloud server (DigitalOcean, Vultr, or Linode).
+
+```
+VPS (always on, ~$6/mo)
+├── Docker: ibeam ──► IB Gateway session, auto-restores after crashes
+└── cron 3:45 PM ET (weekdays):
+       cd ~/bot-trader && git pull
+       python3 -m ibkr.executor --live    # or --paper for paper trading
 ```
 
-**2. Change cron to hit the 3:45 PM MOC window:**
-```yaml
-- cron: "45 19 * * 1-5"   # 3:45 PM EDT
+**Setup steps:**
+
+```bash
+# 1. Provision a $6/mo Droplet (Ubuntu 24.04, 1 GB RAM is enough)
+
+# 2. Install Docker
+curl -fsSL https://get.docker.com | sh
+
+# 3. Clone and configure ibeam
+git clone https://github.com/Voyz/ibeam.git
+cd ibeam
+cp env.list.template env.list
+# Edit env.list: set IBEAM_ACCOUNT, IBEAM_PASSWORD
+
+# 4. Start ibeam (keeps IB Gateway alive)
+docker-compose up -d
+
+# 5. Clone the trading bot
+cd ~ && git clone https://github.com/samarth339/bot-trader-3leveraged.git
+pip install -r bot-trader-3leveraged/requirements.txt
+
+# 6. Add a crontab entry (3:30 PM signal, 3:45 PM execute)
+crontab -e
+# Add:
+# 30 19 * * 1-5  cd ~/bot-trader-3leveraged && git pull && python3 daily_signal.py
+# 45 19 * * 1-5  cd ~/bot-trader-3leveraged && python3 -m ibkr.executor --live
 ```
 
-**3. Add a persistent machine with IB Gateway running on port 4001:**
-- **Option A:** Self-hosted GitHub Actions runner (`runs-on: self-hosted`) on a Mac with IB Gateway
-- **Option B:** Small VPS running [ibeam](https://github.com/Voyz/ibeam) (headless IB Gateway in Docker, ~$6/mo)
+**Code change needed in `ibkr/executor.py`** — the executor host is currently hardcoded to `127.0.0.1`. On a VPS running ibeam locally, this is already correct (ibeam and executor run on the same machine).
 
-Everything else — signal generation, allocation math, safety guards, email alerts — is identical and already validated.
+Everything else — signal generation logic, allocation math, safety guards, email alerts — is identical and already validated through Phase 3 and Phase 4.
 
 ---
 

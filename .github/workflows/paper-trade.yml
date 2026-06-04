@@ -1,29 +1,24 @@
-name: Phase 4 — Paper Trade Execution (IBKR)
+name: Phase 4 — Paper Trade Execution
 
-# Runs every weekday at ~3:45 PM EDT via a self-hosted runner on your Mac.
-# The self-hosted runner has IB Gateway running on localhost:4002 (paper port).
-# ibkr/executor.py connects to IB, runs all 10 safety guards, and submits a
-# real MOC order on paper account DUP540674.
+# Runs every weekday at ~4:00 PM EDT (20:00 UTC, UTC-4 summer).
+# Waits until after market close so fills use the actual TQQQ closing price.
+# Uses paper_trade.py simulation — no IB Gateway or local machine required.
+# Fully autonomous on GitHub-hosted runners.
 #
-# Requires:
-#   1. A GitHub Actions self-hosted runner installed and running on your Mac
-#      (see README "Self-Hosted Runner Setup" section)
-#   2. IB Gateway running on localhost:4002 before 3:45 PM ET
+# Phase 5 (live trading): replace with ibkr/executor.py on ibeam VPS.
+# See README "Phase 5 — ibeam Setup" section.
 #
-# Cron timing (UTC, EDT = UTC-4):
-#   EDT (Mar–Nov): cron "37 19" → dispatches ~3:45 PM ET  ← current
-#   EST (Nov–Mar): change to   "37 20"  when clocks fall back in November
-#
-# Manual dry-run (no order submitted):
-#   Actions tab → Phase 4 — Paper Trade Execution → Run workflow → dry_run=true
+# DST note: cron is in UTC.
+#   EDT (Mar–Nov): 20:00 UTC = 4:00 PM ET  ← current
+#   EST (Nov–Mar): 20:00 UTC = 3:00 PM ET  → update to 21:00 when DST ends
 
 on:
   schedule:
-    - cron: "37 19 * * 1-5"
+    - cron: "0 20 * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run — connect + compute plan but do NOT submit order"
+        description: "Dry run — compute plan but do NOT update portfolio state"
         required: false
         default: "false"
         type: boolean
@@ -33,158 +28,143 @@ env:
   PYTHONDONTWRITEBYTECODE: 1
 
 jobs:
-  paper-trade-ibkr:
-    name: Submit MOC Paper Order via IB Gateway
-    runs-on: self-hosted          # Must be the Mac with IB Gateway on port 4002
-    timeout-minutes: 20
+  paper-trade:
+    name: Simulate MOC Paper Trade
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repo (pull latest signal)
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Verify IB Gateway is reachable on port 4002
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
         run: |
-          python3 - <<'PYEOF'
-          import socket, sys
-          try:
-              s = socket.create_connection(("127.0.0.1", 4002), timeout=5)
-              s.close()
-              print("IB Gateway reachable on port 4002 ✓")
-          except Exception as e:
-              print(f"ERROR: IB Gateway NOT reachable on port 4002: {e}")
-              print("Make sure IB Gateway is running and API connections are enabled.")
-              sys.exit(1)
-          PYEOF
+          pip install --upgrade pip
+          pip install -r requirements-ci.txt
 
-      - name: Verify today's signal exists
-        run: |
-          python3 - <<'PYEOF'
-          import pandas as pd
-          from datetime import date, timedelta
-          from pathlib import Path
-
-          path = Path("logs/signal_history.csv")
-          if not path.exists():
-              print("ERROR: signal_history.csv not found")
-              exit(1)
-
-          df  = pd.read_csv(path, parse_dates=["as_of_date"])
-          row = df.iloc[-1]
-          sig_date = pd.Timestamp(row["as_of_date"]).date()
-          today    = date.today()
-          age      = (today - sig_date).days
-
-          print(f"Signal: {sig_date}  regime={row['regime']}  "
-                f"action={row['action']}  weight_a={row['weight_a']}  age={age}d")
-
-          if age > 4:
-              print(f"WARNING: Signal is {age} days old. "
-                    "The daily-signal workflow may have failed.")
-          PYEOF
-
-      - name: Install / sync dependencies
-        run: |
-          pip install --quiet -r requirements.txt
-
-      - name: Execute paper trade via IB Gateway
+      - name: Run paper trade simulation
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            echo "=== DRY RUN MODE — no order will be submitted ==="
-            python3 -m ibkr.executor --paper --dry-run
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 paper_trade.py --dry-run
           else
-            python3 -m ibkr.executor --paper
+            python3 paper_trade.py
           fi
-
-      - name: Show post-execution status
-        if: always()
-        run: python3 -m ibkr.executor --status
 
       - name: Write job summary
         if: always()
         run: |
           python3 - <<'PYEOF'
-          import json, os
+          import json, csv, os
           from pathlib import Path
 
           summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          port    = Path("logs/paper_portfolio.json")
+          trades  = Path("logs/paper_trades.csv")
 
-          # Read IBKR state (source of truth for real fills)
-          state_path = Path("logs/ibkr_state.json")
-          state = json.loads(state_path.read_text()) if state_path.exists() else {}
-
-          # Read latest signal
-          import csv
-          sig_rows = []
-          sig_path = Path("logs/signal_history.csv")
-          if sig_path.exists():
-              with open(sig_path) as f:
-                  sig_rows = list(csv.DictReader(f))
-          sig = sig_rows[-1] if sig_rows else {}
-
-          # Read order log for today's fill
-          order_rows = []
-          order_path = Path("logs/ibkr_orders.csv")
-          if order_path.exists():
-              with open(order_path) as f:
-                  order_rows = list(csv.DictReader(f))
-          today_orders = [r for r in order_rows
-                          if r.get("date","").startswith(str(__import__("datetime").date.today()))]
-          latest_order = today_orders[-1] if today_orders else {}
-
-          nlv       = state.get("last_nlv", 0)
-          shares    = state.get("last_shares_tqqq", 0)
-          fill      = state.get("last_fill_price", 0)
-          target    = state.get("last_target_pct", 0)
+          state = json.loads(port.read_text()) if port.exists() else {}
+          shares    = state.get("tqqq_shares", 0)
+          cash      = state.get("cash", 0)
+          nlv       = state.get("nlv", cash)
+          seed      = state.get("seed_capital", 10000)
+          peak      = state.get("peak_equity", nlv)
+          drawdown  = (peak - nlv) / peak if peak > 0 else 0
+          ret_pct   = (nlv - seed) / seed * 100 if seed > 0 else 0
           n_trades  = state.get("total_trades_ytd", 0)
-          regime    = state.get("last_regime", sig.get("regime", "—"))
-          order_id  = state.get("last_order_id", "—")
-          peak      = state.get("peak_equity", nlv or 5877)
-          dd        = (peak - nlv) / peak if peak > 0 and nlv > 0 else 0
+          last_fill = state.get("last_fill_price", 0)
 
-          emoji = {"bull": "🐂", "uncertain": "⚠️", "high_vol": "🔴"}.get(regime, "❓")
-          order_status = latest_order.get("status", "—")
+          trade_rows = []
+          if trades.exists():
+              with open(trades) as f:
+                  trade_rows = list(csv.DictReader(f))
+          latest_trade = trade_rows[-1] if trade_rows else {}
+
+          action    = latest_trade.get("action", "—")
+          delta     = latest_trade.get("delta_shares", "—")
+          status    = latest_trade.get("status", "—")
+          fill      = latest_trade.get("fill_price", "—")
+          slip      = latest_trade.get("slippage_bps", "—")
+
+          emoji_ret = "📈" if ret_pct >= 0 else "📉"
+          emoji_act = {"no_action": "⏸️", "buy": "🟢", "sell": "🔴"}.get(
+              str(action).lower(), "⚙️"
+          )
 
           lines = [
-              f"## {emoji} IBKR Paper Trade — {__import__('datetime').date.today()}",
+              f"## {emoji_act} Paper Trade — {latest_trade.get('date','—')}",
               "",
-              "### Execution",
-              "| | |",
+              "### Today's Execution",
+              "| Field | Value |",
               "|---|---|",
-              f"| Account | DUP540674 (paper) |",
-              f"| Regime | **{emoji} {regime.upper()}** |",
-              f"| Order status | `{order_status}` |",
-              f"| Order ID | {order_id} |",
-              f"| Fill price | ${fill:.2f} |" if fill else "| Fill price | — |",
+              f"| Status | `{status}` |",
+              f"| Action | `{action}` |",
+              f"| Shares delta | {delta} TQQQ |",
+              f"| Fill price | ${float(fill):.2f} |" if fill not in ("—","") else "| Fill price | — |",
+              f"| Slippage | {slip} bps |",
               "",
-              "### Portfolio (IBKR account)",
+              "### Paper Portfolio ($10K seed)",
               "| | |",
               "|---|---|",
               f"| TQQQ shares | {shares} |",
-              f"| Target alloc | {target:.1%} |",
-              f"| NLV | ${nlv:,.2f} |" if nlv else "| NLV | — |",
-              f"| Peak equity | ${peak:,.2f} |",
-              f"| Drawdown | {dd:.1%} |",
+              f"| Cash | ${cash:,.2f} |",
+              f"| NLV | ${nlv:,.2f} |",
+              f"| {emoji_ret} Return | {ret_pct:+.2f}% |",
+              f"| Max drawdown | {drawdown:.1%} |",
               f"| Trades YTD | {n_trades} |",
+              f"| Last fill | ${last_fill:.2f} |" if last_fill else "| Last fill | — |",
               "",
-              "### Today's Signal",
-              "| | |",
-              "|---|---|",
-              f"| Signal date | {sig.get('as_of_date','—')} |",
-              f"| Action | `{sig.get('action','—')}` |",
-              f"| Allocation | {int(float(sig.get('weight_a',0.5))*100)}% A / {int(float(sig.get('weight_b',0.5))*100)}% B |",
-              f"| QQQ (T-1) | ${float(sig.get('qqq_price',0)):.2f} |",
-              f"| VIX (5d) | {sig.get('vix_signal','—')} |",
-              f"| Gap guard | {'🚫 TRIGGERED' if str(sig.get('gap_guard','')).lower() in ('true','1') else '✅ clear'} |",
+              "### Recent Trades",
+              "| Date | Action | Δ Shares | Fill | NLV after |",
+              "|---|---|---|---|---|",
           ]
+          for r in trade_rows[-7:]:
+              fp = r.get("fill_price","—")
+              fp_str = f"${float(fp):.2f}" if fp not in ("—","") else "—"
+              lines.append(
+                  f"| {r.get('date','—')} "
+                  f"| {r.get('action','—')} "
+                  f"| {r.get('delta_shares','—')} "
+                  f"| {fp_str} "
+                  f"| ${float(r.get('nlv_after',0)):,.2f} |"
+              )
+
           with open(summary, "a") as f:
               f.write("\n".join(lines) + "\n")
           print("Job summary written.")
           PYEOF
+
+      - name: Pull latest before committing
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git fetch origin main
+          git rebase --autostash origin/main
+
+      - name: Commit paper portfolio state
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add logs/paper_portfolio.json logs/paper_trades.csv logs/signal_history.csv
+          if git diff --cached --quiet; then
+            echo "No portfolio changes to commit."
+          else
+            TODAY=$(date -u '+%Y-%m-%d')
+            git commit -m "paper: trade execution ${TODAY} [skip ci]"
+            git push
+            echo "Paper portfolio state committed."
+          fi

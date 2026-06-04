@@ -286,17 +286,61 @@ The **Gap** column in the signal table shows:
 
 ## GitHub Actions — Remote Automation
 
-All automation runs on GitHub-hosted runners. No local machine required for paper trading.
+Signal generation runs on GitHub-hosted runners (no local machine needed).
+Paper trade execution runs on a **self-hosted runner** on your Mac — IB Gateway must be reachable on `localhost:4002`.
+
+### Self-Hosted Runner Setup (one-time, ~5 minutes)
+
+The execution workflow needs to reach IB Gateway on your Mac. A self-hosted runner lets GitHub Actions trigger jobs that run locally.
+
+**Step 1 — Register the runner**
+
+Go to: **github.com/samarth339/bot-trader-3leveraged → Settings → Actions → Runners → New self-hosted runner**
+
+Choose **macOS**, then run the commands GitHub shows. They look like:
+
+```bash
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o actions-runner-osx-arm64.tar.gz -L https://github.com/actions/runner/releases/download/v2.x.x/...
+tar xzf ./actions-runner-osx-arm64.tar.gz
+./config.sh --url https://github.com/samarth339/bot-trader-3leveraged --token <TOKEN>
+```
+
+When prompted for labels, add: `self-hosted,macos`
+
+**Step 2 — Install as a background service**
+
+```bash
+cd ~/actions-runner
+./svc.sh install
+./svc.sh start
+```
+
+The runner now starts automatically on login and stays running in the background.
+
+**Step 3 — Verify it's online**
+
+```bash
+./svc.sh status
+```
+
+You should also see it appear as **Idle** in GitHub → Settings → Actions → Runners.
+
+**Step 4 — Keep IB Gateway open before 3:45 PM ET on weekdays**
+
+That's it. When the `paper-trade.yml` cron fires, the runner picks it up, checks IB Gateway is reachable, and submits the MOC order.
+
+---
 
 ### Workflow schedule
 
-| Workflow | Cron (UTC) | Fires ~ET | What it does |
-|---|---|---|---|
-| `daily-signal.yml` | `30 19 * * 1-5` | 3:30 PM EDT | Data refresh → `daily_signal.py` → commits `signal_history.csv` |
-| `paper-trade.yml` | `0 20 * * 1-5` | 4:00 PM EDT | `paper_trade.py` → simulates fill → commits portfolio state → sends email |
-| `ci.yml` | on push + Mon 2 PM UTC | — | 432 tests across 7 parallel jobs |
+| Workflow | Runner | Cron (UTC) | Fires ~ET | What it does |
+|---|---|---|---|---|
+| `daily-signal.yml` | GitHub-hosted | `30 19 * * 1-5` | 3:30 PM EDT | Data refresh → `daily_signal.py` → commits `signal_history.csv` |
+| `paper-trade.yml` | **self-hosted (your Mac)** | `37 19 * * 1-5` | 3:45 PM EDT | `ibkr.executor --paper` → real MOC order on DUP540674 via IB Gateway |
+| `ci.yml` | GitHub-hosted | on push + Mon 2 PM UTC | — | 432 tests across 7 parallel jobs |
 
-> **DST note:** Crons are in UTC. When clocks fall back in November (EDT → EST), update the cron hour from `19`/`20` to `20`/`21` in both workflow files.
+> **DST note:** Crons are in UTC. When clocks fall back in November (EDT → EST), update `37 19` → `37 20` in `paper-trade.yml`.
 
 ### Required GitHub Secrets
 

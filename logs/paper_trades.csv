@@ -1,2 +1,3 @@
 date,regime,action,status,tqqq_shares_before,delta_shares,tqqq_shares_after,fill_price,slippage_bps,cash_before,cash_after,nlv_before,nlv_after,target_pct,actual_pct,gap_guard,notes
 2026-06-03,bull,HOLD,executed,0,94,94,87.3072,10,10000.0,1793.12,10000.0,9991.8,82.5,82.5,False,BUY 94 TQQQ (0.0% → 82.5%)
+2026-06-04,bull,HOLD,no_action,94,0,94,,0,1793.12,1793.12,9803.8,9803.8,82.5,81.71,False,Within drift tolerance (0.8% < 5.0%)

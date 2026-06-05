@@ -46,3 +46,4 @@ as_of_date,signal_date,regime,action,weight_a,weight_b,rebalance,drift_pct,qqq_p
 2026-06-01,2026-05-29,bull,HOLD,0.9,0.1,False,0.0,738.31,628.1594,17.54,16.19,16.05,False,False,
 2026-06-03,2026-06-01,bull,HOLD,0.9,0.1,False,0.0,742.74,629.3791,18.01,16.08,15.77,False,False,0.52
 2026-06-04,2026-06-02,bull,HOLD,0.9,0.1,False,0.0,746.16,630.5914,18.33,15.83,16.06,False,False,-3.57
+2026-06-05,2026-06-03,bull,HOLD,0.9,0.1,False,0.0,744.21,631.6728,17.82,15.79,15.4,False,False,-4.31

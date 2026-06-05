@@ -1,11 +1,11 @@
 {
-  "tqqq_shares": 94,
-  "cash": 1793.12,
-  "nlv": 9803.8,
+  "tqqq_shares": 0,
+  "cash": 8652.96,
+  "nlv": 8652.96,
   "peak_equity": 10000.0,
   "seed_capital": 10000.0,
-  "total_trades_ytd": 1,
-  "last_trade_date": "2026-06-03",
-  "last_fill_price": 87.3072,
+  "total_trades_ytd": 2,
+  "last_trade_date": "2026-06-05",
+  "last_fill_price": 72.977,
   "inception_date": "2026-05-29"
 }

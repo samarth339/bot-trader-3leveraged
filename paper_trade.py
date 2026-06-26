@@ -245,6 +245,7 @@ class PaperSafetyGuard:
         self.portfolio         = portfolio
         self.tqqq_closes       = tqqq_closes or []   # [prev_close, last_close]
         self.buy_block_reasons = []
+        self.blocked_by        = None                # name of the hard-blocking guard
 
     def run_all_checks(self) -> tuple[bool, str]:
         """
@@ -264,6 +265,7 @@ class PaperSafetyGuard:
             blocked, reason = fn()
             if blocked:
                 logger.warning(f"Guard [{name}] BLOCKED: {reason}")
+                self.blocked_by = name
                 return True, reason
             logger.debug(f"Guard [{name}] ✓")
         if self.buy_block_reasons:
@@ -679,6 +681,13 @@ def run(dry_run: bool = False) -> bool:
     blocked, reason  = guard.run_all_checks()
 
     if blocked:
+        # Double submission is the idempotency guard: a same-day re-run (manual
+        # retry, duplicate dispatch) must be a true no-op — no trade-ledger row,
+        # no commit churn. Just exit 0 cleanly.
+        if guard.blocked_by == "double_submit":
+            logger.info("Idempotent re-run — already executed today, no-op")
+            return True
+
         # Persist the no-action record so the halt is visible in the audit log.
         if not dry_run:
             append_trade({

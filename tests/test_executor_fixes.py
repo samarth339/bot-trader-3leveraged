@@ -307,6 +307,24 @@ class TestPaperExitCodes:
         trades = pd.read_csv(tmp_path / "trades.csv")
         assert (trades["status"] == "buy_blocked").any()
 
+    def test_double_submission_is_silent_noop(self, tmp_path, monkeypatch):
+        """A same-day re-run must exit 0 and append NO trade-ledger row."""
+        port = self._portfolio()
+        from datetime import date
+        port["last_trade_date"] = date.today().isoformat()   # already traded today
+        port["tqqq_shares"] = 50
+        pt = self._seed(tmp_path, monkeypatch, self._signal_row(gap_guard=False), port)
+        monkeypatch.setattr(pt, "fetch_recent_closes", lambda t, n=2: [100.0, 99.0])
+        monkeypatch.setattr(pt, "fetch_close", lambda t: 15.0)
+        monkeypatch.setattr(pt, "send_alert", lambda *a, **k: None)
+        ok = pt.run(dry_run=False)
+        assert ok is True, "idempotent re-run must exit 0"
+        import os, pandas as pd
+        # no trades.csv written, or written with zero rows — never a 'blocked' row
+        if os.path.exists(tmp_path / "trades.csv"):
+            df = pd.read_csv(tmp_path / "trades.csv")
+            assert len(df) == 0, f"re-run must not append rows, got {df.to_dict('records')}"
+
     def test_missing_signal_returns_false(self, tmp_path, monkeypatch):
         import paper_trade
         monkeypatch.setattr(paper_trade, "SIGNAL_LOG", tmp_path / "nope.csv")

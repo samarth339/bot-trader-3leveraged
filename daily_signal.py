@@ -85,32 +85,34 @@ def compute_regime(qqq: pd.DataFrame, vix: pd.DataFrame,
 
     qqq_close = qqq["close"]
     vix_close = vix["close"]
-
-    # ── Smooth VIX then shift by 1 (T-1 hard guard at data layer) ─────────────
     vix_smoothed = vix_close.rolling(vix_smooth, min_periods=1).mean()
-    signal_close = qqq_close.shift(1).ffill()     # yesterday's QQQ close
-    signal_vix   = vix_smoothed.shift(1).ffill()  # yesterday's smoothed VIX
 
-    # Find the most recent trading day ≤ as_of_date
-    available_dates = qqq_close.index[qqq_close.index <= as_of_date]
-    if len(available_dates) == 0:
-        raise ValueError(f"No QQQ data on or before {as_of_date.date()}")
-    today_bar = available_dates[-1]
-    # T-1: the signal is sourced from the previous trading day's data
-    signal_date = available_dates[-2] if len(available_dates) >= 2 else today_bar
+    # ── T-1 anchored to the EXECUTION date (as_of_date) ───────────────────────
+    # The signal that drives today's MOC order must use the most recent COMPLETE
+    # trading bar STRICTLY BEFORE as_of_date. Picking that bar directly (instead
+    # of shift(1) read at the most-recent-bar-≤-as_of) is correct in BOTH modes:
+    #   • backcalc / backtest (data includes as_of's bar) → picks as_of−1  (T-1)
+    #   • live at ~3:30pm ET (data's last bar is already yesterday) → still picks
+    #     yesterday (T-1). The old shift double-lagged this case to T-2 because
+    #     today_bar was already yesterday, then shift(1) went back one more day.
+    # It is also immune to a partial same-day bar appearing in the feed.
+    prior_bars = qqq_close.index[qqq_close.index < as_of_date]
+    if len(prior_bars) == 0:
+        raise ValueError(f"No QQQ data strictly before {as_of_date.date()}")
+    signal_bar  = prior_bars[-1]          # true T-1 bar
+    signal_date = signal_bar
 
-    # Signal values — read from the today_bar row of the shifted series
-    # (shifted series at today_bar contains yesterday's actual data)
-    price_signal   = float(signal_close.loc[today_bar])
-    vix_signal     = float(signal_vix.loc[today_bar]) \
-                     if today_bar in signal_vix.index else 20.0
-    vix_raw_today  = float(vix_close.loc[today_bar]) \
-                     if today_bar in vix_close.index else float("nan")
+    price_signal  = float(qqq_close.loc[signal_bar])
+    vix_signal    = float(vix_smoothed.loc[signal_bar]) \
+                    if signal_bar in vix_smoothed.index else 20.0
+    vix_raw_today = float(vix_close.loc[signal_bar]) \
+                    if signal_bar in vix_close.index else float("nan")
 
-    # SMA on shifted close — no look-ahead possible
-    signal_sma_series = signal_close.rolling(ma_window, min_periods=ma_window).mean()
-    sma_val = float(signal_sma_series.loc[today_bar]) \
-              if today_bar in signal_sma_series.index else float("nan")
+    # SMA over actual closes up to and including the T-1 bar (no look-ahead —
+    # signal_bar is strictly before the execution date)
+    sma_series = qqq_close.rolling(ma_window, min_periods=ma_window).mean()
+    sma_val = float(sma_series.loc[signal_bar]) \
+              if signal_bar in sma_series.index else float("nan")
 
     # ── Regime classification ──────────────────────────────────────────────────
     if np.isnan(sma_val) or np.isnan(price_signal):
@@ -133,8 +135,8 @@ def compute_regime(qqq: pd.DataFrame, vix: pd.DataFrame,
     # price is within 1.5% of SMA, upgrade to uncertain early (reduces re-entry lag).
     pct_vs_sma = (price_signal - sma_val) / sma_val * 100 if not np.isnan(sma_val) else float("nan")
     roc_5 = float("nan")
-    if len(available_dates) >= 6:
-        price_5d_ago = float(signal_close.loc[available_dates[-6]])
+    if len(prior_bars) >= 6:
+        price_5d_ago = float(qqq_close.loc[prior_bars[-6]])
         if price_5d_ago > 0 and not np.isnan(price_5d_ago):
             roc_5 = (price_signal - price_5d_ago) / price_5d_ago * 100
 
@@ -381,7 +383,9 @@ def main():
     exposure_a = exposure_b = float("nan")
     exposure_state_date = ""
     try:
-        exp = compute_exposures(as_of=as_of)
+        # Anchor exposure to the SAME T-1 bar the regime uses, so regime and
+        # per-strategy exposure can never reflect different trading days.
+        exp = compute_exposures(as_of=sig["signal_date"])
         exposure_a = exp["exposure_a"]
         exposure_b = exp["exposure_b"]
         exposure_state_date = exp["state_date"]

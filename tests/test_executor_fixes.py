@@ -321,6 +321,56 @@ class TestPaperExitCodes:
         assert pt.run(dry_run=False) is False, "no price feed → exit 1"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  8. T-1 anchoring — live signal must not double-lag to T-2
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestT1Anchoring:
+    """
+    compute_regime must use the most recent COMPLETE bar strictly before the
+    execution date in BOTH modes:
+      • backcalc (data includes as_of's bar) → as_of − 1 trading day
+      • live (data's last bar is already yesterday) → that bar, not the day
+        before it (the old shift double-lagged live to T-2)
+    """
+
+    def _synth(self, n=180):
+        import numpy as np, pandas as pd
+        idx = pd.bdate_range("2025-01-01", periods=n)
+        close = pd.Series(100.0 * (1.0 + 0.0005) ** np.arange(n), index=idx)
+        qqq = pd.DataFrame({"close": close})
+        vix = pd.DataFrame({"close": pd.Series(15.0, index=idx)})
+        return qqq, vix
+
+    def test_backcalc_uses_prior_bar(self):
+        import pandas as pd
+        from daily_signal import compute_regime
+        qqq, vix = self._synth()
+        sig = compute_regime(qqq, vix, qqq.index[-1])
+        assert pd.Timestamp(sig["signal_date"]).date() == qqq.index[-2].date()
+
+    def test_live_uses_last_complete_bar_not_t2(self):
+        import pandas as pd
+        from daily_signal import compute_regime
+        qqq, vix = self._synth()
+        # execution date is the trading day AFTER the last bar (today's bar not
+        # yet in the feed at signal time) → T-1 is the last bar, not the one before
+        as_of = qqq.index[-1] + pd.tseries.offsets.BDay(1)
+        sig = compute_regime(qqq, vix, as_of)
+        assert pd.Timestamp(sig["signal_date"]).date() == qqq.index[-1].date(), (
+            "live signal must use the last complete bar (T-1), not double-lag to T-2"
+        )
+
+    def test_never_uses_execution_day_bar(self):
+        """No look-ahead: the signal bar is always strictly before as_of."""
+        import pandas as pd
+        from daily_signal import compute_regime
+        qqq, vix = self._synth()
+        as_of = qqq.index[-1]
+        sig = compute_regime(qqq, vix, as_of)
+        assert pd.Timestamp(sig["signal_date"]) < as_of
+
+
 def _tiny_data():
     """Minimal valid OHLCV frames so the constructor's data guard passes."""
     import pandas as pd

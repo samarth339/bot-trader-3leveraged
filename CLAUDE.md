@@ -262,6 +262,14 @@ VIX 5-day avg (T-1) ──► threshold check ──────┘
   35% DD halt set `signal["_force_flatten"]` → full exit when holding shares; they only
   hard-block (freeze buys) once the account is already flat. The old behavior froze a
   leveraged long in place and rode it down (replay: −81%).
+- **T-1 anchored to the execution date (2026-06 fix)**: `daily_signal.compute_regime`
+  picks the most recent complete bar STRICTLY BEFORE `as_of_date` and reads it directly,
+  instead of `shift(1)` on the most-recent-bar-≤-as_of. The old form double-lagged the
+  live path to T-2: at ~3:30 PM ET the feed's last bar is already yesterday, so the extra
+  shift reached back two days (visible in `signal_history.csv`: as_of − signal_date = 2
+  trading days). Backtest/backcalc are unchanged (data includes today's bar → still T-1);
+  exposure replay is anchored to the same `signal_date` so regime and exposure never use
+  different days.
 - **No last-fill daily stop**: the old 7%-below-last-fill full-exit stop caused
   sell-low/rebuy-higher whipsaw (−20% in week 1 of paper trading). Replaced by a
   same-day crash check (TQQQ ≤ −7% vs previous close → block BUYs only); strategy exits

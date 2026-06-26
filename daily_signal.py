@@ -36,6 +36,7 @@ from config.strategy_config import (
     REGIME_CONFIG, ALLOC_CONFIG, EXECUTION_CONFIG, RISK_CONFIG,
     STRATEGY_A_CONFIG, STRATEGY_B_CONFIG,
 )
+from backtester.exposure_replay import compute_exposures
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 LOG_DIR = Path("logs")
@@ -263,7 +264,8 @@ def append_signal_log(row: dict):
 
 # ── Display ────────────────────────────────────────────────────────────────────
 def print_signal(sig: dict, action: dict, shadow: bool = False,
-                 gap_triggered: bool = False, gap_pct: float = float("nan")):
+                 gap_triggered: bool = False, gap_pct: float = float("nan"),
+                 exposure_a: float = float("nan"), exposure_b: float = float("nan")):
     w      = 54
     border = "═" * w
     mid    = "─" * w
@@ -295,6 +297,12 @@ def print_signal(sig: dict, action: dict, shadow: bool = False,
     print(f"╠{border}╣")
     print(line(f"Target alloc   : {int(alloc[0]*100)}% Strategy-A  /  "
                f"{int(alloc[1]*100)}% Strategy-B"))
+    if not np.isnan(exposure_a) and not np.isnan(exposure_b):
+        blended = alloc[0] * exposure_a + alloc[1] * exposure_b
+        print(line(f"Strat exposure : A {exposure_a:.0%} / B {exposure_b:.0%}  "
+                   f"→ blended {blended:.1%} TQQQ"))
+    else:
+        print(line("Strat exposure : UNAVAILABLE — executor falls back to max caps"))
     if prev != alloc:
         print(line(f"Previous alloc : {int(prev[0]*100)}% / {int(prev[1]*100)}%  "
                    f"(drift: {drift}%)"))
@@ -366,6 +374,29 @@ def main():
                             pct_vs_sma=sig["pct_vs_sma"] if not np.isnan(sig["pct_vs_sma"]) else 0.0,
                             prev_pct_vs_sma=prev_pct_vs_sma)
 
+    # ── Per-strategy exposure state (replay through latest complete bar) ──────
+    # The executors target weight_a×exposure_a + weight_b×exposure_b. Without
+    # this, blending weight×max_position_pct floors live TQQQ exposure at ~66%
+    # even when the backtested strategies are fully in cash.
+    exposure_a = exposure_b = float("nan")
+    exposure_state_date = ""
+    try:
+        exp = compute_exposures(as_of=as_of)
+        exposure_a = exp["exposure_a"]
+        exposure_b = exp["exposure_b"]
+        exposure_state_date = exp["state_date"]
+        wa, wb = action["target_alloc"]
+        logger.info(
+            f"Strategy exposures (through {exposure_state_date}): "
+            f"A={exposure_a:.1%}  B={exposure_b:.1%}  →  "
+            f"blended target {wa*exposure_a + wb*exposure_b:.1%} TQQQ"
+        )
+    except Exception as exc:
+        # Executors fall back to max_position caps when these fields are
+        # missing — log loudly because that fallback over-allocates in stress.
+        logger.error(f"Exposure replay FAILED — executors will fall back to "
+                     f"max-position caps: {exc}")
+
     # ── Gap guard check ────────────────────────────────────────────────────────
     # Run for today's live signal (not for historical --date back-calculations,
     # since we can't reconstruct intraday open prices for past dates).
@@ -391,7 +422,8 @@ def main():
 
     # Display
     print_signal(sig, action, shadow=args.shadow,
-                 gap_triggered=gap_triggered, gap_pct=gap_pct_val)
+                 gap_triggered=gap_triggered, gap_pct=gap_pct_val,
+                 exposure_a=exposure_a, exposure_b=exposure_b)
 
     # Log signal
     log_row = {
@@ -411,6 +443,9 @@ def main():
         "shadow":           args.shadow,
         "gap_guard":        gap_triggered,
         "gap_pct":          round(gap_pct_val * 100, 2) if not np.isnan(gap_pct_val) else "",
+        "exposure_a":       round(exposure_a, 4) if not np.isnan(exposure_a) else "",
+        "exposure_b":       round(exposure_b, 4) if not np.isnan(exposure_b) else "",
+        "exposure_date":    exposure_state_date,
     }
     append_signal_log(log_row)
     logger.info(f"Signal logged: regime={sig['regime']}  "

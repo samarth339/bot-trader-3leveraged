@@ -236,8 +236,34 @@ def bull_signal_live():
     }
 
 
-class TestSafetyGuardDailyLossCompat:
-    """Tests for the yfinance MultiIndex fix in safety_guard._check_daily_loss()."""
+def _mock_multiindex_2day(ticker: str, prev_close: float, last_close: float) -> pd.DataFrame:
+    """Two-bar MultiIndex daily df (prev close then last close) for crash-day tests."""
+    idx = pd.date_range("2026-01-14", periods=2, freq="1D")
+    cols = pd.MultiIndex.from_tuples(
+        [("Close", ticker), ("High", ticker), ("Low", ticker),
+         ("Open", ticker), ("Volume", ticker)],
+        names=["Price", "Ticker"],
+    )
+    rows = [
+        [prev_close, prev_close, prev_close, prev_close, 1_000_000],
+        [last_close, last_close, last_close, last_close, 1_000_000],
+    ]
+    return pd.DataFrame(rows, index=idx, columns=cols)
+
+
+def _mock_flat_2day(prev_close: float, last_close: float) -> pd.DataFrame:
+    """Two-bar flat-column daily df for crash-day tests."""
+    idx = pd.date_range("2026-01-14", periods=2, freq="1D")
+    return pd.DataFrame(
+        {"Close": [prev_close, last_close], "High": [prev_close, last_close],
+         "Low": [prev_close, last_close], "Open": [prev_close, last_close],
+         "Volume": [1_000_000, 1_000_000]},
+        index=idx,
+    )
+
+
+class TestSafetyGuardCrashDayCompat:
+    """Tests for the yfinance MultiIndex fix in safety_guard._check_crash_day()."""
 
     def _make_guard(self, mock_account_with_tqqq, bull_signal_live):
         from ibkr.safety_guard import SafetyGuard
@@ -246,87 +272,68 @@ class TestSafetyGuardDailyLossCompat:
             signal=bull_signal_live.copy(),
         )
 
-    def test_multiindex_current_price_parsed_correctly(
+    def test_multiindex_parsed_no_buyblock_on_small_drop(
         self, mock_account_with_tqqq, bull_signal_live
     ):
-        """
-        MultiIndex DataFrame must not cause TypeError; daily loss check must
-        complete without error and return GuardResult(blocked=False).
-        """
-        from ibkr.safety_guard import SafetyGuard
-
-        # Price is $63 vs fill of $65 → ~3% loss, below the 7% threshold
-        multiindex_df = _mock_multiindex_df("TQQQ", close=63.0)
+        """MultiIndex must parse cleanly; −3% day records no buy-block."""
+        df = _mock_multiindex_2day("TQQQ", prev_close=65.0, last_close=63.0)
         guard = self._make_guard(mock_account_with_tqqq, bull_signal_live)
 
-        with patch("ibkr.safety_guard.yf.download", return_value=multiindex_df):
-            result = guard._check_daily_loss()
+        with patch("ibkr.safety_guard.yf.download", return_value=df):
+            result = guard._check_crash_day()
 
         assert not result.blocked
-        assert not guard.signal.get("_daily_stop_triggered", False)
+        assert not guard.buy_block_reasons
 
-    def test_flat_columns_daily_loss_still_work(
+    def test_flat_columns_crash_day_still_work(
         self, mock_account_with_tqqq, bull_signal_live
     ):
-        """Old flat-column format must still work in _check_daily_loss."""
-        flat_df = _mock_flat_df(price=63.0)
-        guard = self.__class__._make_guard(
-            self, mock_account_with_tqqq, bull_signal_live
-        )
-
-        with patch("ibkr.safety_guard.yf.download", return_value=flat_df):
-            result = guard._check_daily_loss()
-
-        assert not result.blocked
-
-    def test_multiindex_triggers_daily_stop_on_large_loss(
-        self, mock_account_with_tqqq, bull_signal_live
-    ):
-        """
-        If price dropped >7% from fill, _daily_stop_triggered must be set.
-        Fill=$65, current=$60 → loss=7.7% → triggers.
-        """
-        from ibkr.safety_guard import SafetyGuard
-
-        multiindex_df = _mock_multiindex_df("TQQQ", close=60.0)
+        """Old flat-column format must still work in _check_crash_day."""
+        df = _mock_flat_2day(prev_close=65.0, last_close=63.0)
         guard = self._make_guard(mock_account_with_tqqq, bull_signal_live)
 
-        with patch("ibkr.safety_guard.yf.download", return_value=multiindex_df):
-            result = guard._check_daily_loss()
+        with patch("ibkr.safety_guard.yf.download", return_value=df):
+            result = guard._check_crash_day()
 
-        # Guard 7 never blocks — it only mutates the signal
         assert not result.blocked
-        assert guard.signal.get("_daily_stop_triggered", False), (
-            "Daily stop must be triggered when loss >= 7%"
-        )
 
-    def test_empty_download_fails_open_daily_loss(
+    def test_multiindex_buyblocks_on_large_drop(
+        self, mock_account_with_tqqq, bull_signal_live
+    ):
+        """−9% day (≥7%) records a buy-block but never hard-blocks/force-sells."""
+        df = _mock_multiindex_2day("TQQQ", prev_close=65.0, last_close=59.0)
+        guard = self._make_guard(mock_account_with_tqqq, bull_signal_live)
+
+        with patch("ibkr.safety_guard.yf.download", return_value=df):
+            result = guard._check_crash_day()
+
+        assert not result.blocked
+        assert guard.buy_block_reasons, "≥7% drop must record a BUY block"
+        assert not guard.signal.get("_force_flatten", False)
+
+    def test_empty_download_fails_open_crash_day(
         self, mock_account_with_tqqq, bull_signal_live
     ):
         """Empty DataFrame from yfinance must not block — fails-open."""
-        guard = self.__class__._make_guard(
-            self, mock_account_with_tqqq, bull_signal_live
-        )
+        guard = self._make_guard(mock_account_with_tqqq, bull_signal_live)
 
         with patch("ibkr.safety_guard.yf.download", return_value=_empty_df()):
-            result = guard._check_daily_loss()
+            result = guard._check_crash_day()
 
         assert not result.blocked
-        assert not guard.signal.get("_daily_stop_triggered", False)
+        assert not guard.buy_block_reasons
 
-    def test_runtime_error_fails_open_daily_loss(
+    def test_runtime_error_fails_open_crash_day(
         self, mock_account_with_tqqq, bull_signal_live
     ):
         """RuntimeError during download must be swallowed; guard fails-open."""
-        guard = self.__class__._make_guard(
-            self, mock_account_with_tqqq, bull_signal_live
-        )
+        guard = self._make_guard(mock_account_with_tqqq, bull_signal_live)
 
         with patch(
             "ibkr.safety_guard.yf.download",
             side_effect=RuntimeError("network error"),
         ):
-            result = guard._check_daily_loss()
+            result = guard._check_crash_day()
 
         assert not result.blocked
 
@@ -366,10 +373,10 @@ class TestSafetyGuardVixExtremeCompat:
 
         assert not result.blocked
 
-    def test_multiindex_vix_extreme_blocks_buy(
+    def test_multiindex_vix_extreme_records_buyblock(
         self, mock_account_with_tqqq, bull_signal_live
     ):
-        """MultiIndex VIX at 46 must block BUY orders."""
+        """MultiIndex VIX at 46 records a BUY block (never hard-blocks)."""
         signal = {**bull_signal_live, "action": "INCREASE_A", "weight_a": 0.75}
         guard = self._make_guard(mock_account_with_tqqq, signal)
         multiindex_df = _mock_multiindex_df("^VIX", close=46.0)
@@ -377,25 +384,22 @@ class TestSafetyGuardVixExtremeCompat:
         with patch("ibkr.safety_guard.yf.download", return_value=multiindex_df):
             result = guard._check_vix_extreme()
 
-        assert result.blocked
-        assert "46" in result.reason or "VIX" in result.reason
+        assert not result.blocked, "VIX extreme must not hard-block (sells must pass)"
+        assert guard.buy_block_reasons
+        assert any("46" in r or "VIX" in r for r in guard.buy_block_reasons)
 
     def test_multiindex_vix_extreme_allows_sell(
         self, mock_account_with_tqqq, bull_signal_live
     ):
-        """VIX extreme must NOT block SELL/REDUCE actions even with MultiIndex."""
-        signal = {
-            **bull_signal_live,
-            "action": "REDUCE_A",
-            "_daily_stop_triggered": True,
-        }
+        """VIX extreme must NOT hard-block — SELL plans always proceed."""
+        signal = {**bull_signal_live, "action": "REDUCE_A"}
         guard = self._make_guard(mock_account_with_tqqq, signal)
         multiindex_df = _mock_multiindex_df("^VIX", close=46.0)
 
         with patch("ibkr.safety_guard.yf.download", return_value=multiindex_df):
             result = guard._check_vix_extreme()
 
-        assert not result.blocked, "Extreme VIX must not block SELL orders"
+        assert not result.blocked, "Extreme VIX must not block the guard chain"
 
     def test_empty_download_fails_open_vix(
         self, mock_account_with_tqqq, bull_signal_live

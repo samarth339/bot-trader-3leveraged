@@ -12,14 +12,18 @@ The simulation mirrors ibkr/executor.py but replaces the IB connection
 with yfinance price fetches and a JSON state file.
 
 Safety checks run (IB-agnostic subset):
-  ✓ Kill switch                       (logs/ibkr_kill.flag)
   ✓ Signal staleness                  (as_of_date must be today or last trading day)
-  ✓ Double submission                 (last_trade_date in portfolio state)
-  ✓ Portfolio drawdown halt           (≥ 35% DD activates kill switch)
-  ✓ Trade frequency limit             (≥ 100 trades/year)
-  ✓ Gap guard                         (from signal row — logged at signal time)
-  ✓ VIX extreme override              (live VIX close ≥ 45 blocks BUY)
-  ✓ Daily stop-loss                   (7% intraday loss forces full exit)
+  ✓ Double submission                 (last_trade_date in portfolio state)   [hard block]
+  ✓ Kill switch                       (logs/ibkr_kill.flag)                  [flatten, then freeze buys]
+  ✓ Portfolio drawdown halt           (≥ 35% DD activates kill switch)       [flatten, then freeze buys]
+  ✓ Trade frequency limit             (≥ 100 trades/year)                    [blocks BUYs only; warns at 50]
+  ✓ Crash-day check                   (TQQQ ≤ −7% vs prev close)             [blocks BUYs only]
+  ✓ Gap guard                         (from signal row — logged at signal time) [blocks BUYs only]
+  ✓ VIX extreme override              (live VIX close ≥ 45)                  [blocks BUYs only]
+
+Position sizing comes from the replayed per-strategy exposure state
+(exposure_a/exposure_b in the signal row): target = wa×exp_a + wb×exp_b.
+This matches what the validated backtest holds, including its exits.
 
 Usage:
     python3 paper_trade.py             # normal daily run
@@ -152,20 +156,25 @@ def _flatten(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_close(ticker: str) -> Optional[float]:
-    """Fetch today's closing price. Returns None if unavailable."""
+def fetch_recent_closes(ticker: str, n: int = 2) -> list:
+    """Fetch the n most recent daily closes (oldest first). Empty list on failure."""
     try:
         data = yf.download(ticker, period="5d", interval="1d", progress=False)
         data = _flatten(data)
         if data.empty:
-            return None
-        # Use the most recent bar's close
-        price = float(data["Close"].iloc[-1])
-        logger.info(f"Close price {ticker}: ${price:.2f}")
-        return price
+            return []
+        closes = [float(c) for c in data["Close"].iloc[-n:]]
+        logger.info(f"Recent closes {ticker}: " + "  ".join(f"${c:.2f}" for c in closes))
+        return closes
     except Exception as exc:
-        logger.warning(f"Could not fetch {ticker} close: {exc}")
-        return None
+        logger.warning(f"Could not fetch {ticker} closes: {exc}")
+        return []
+
+
+def fetch_close(ticker: str) -> Optional[float]:
+    """Fetch today's closing price. Returns None if unavailable."""
+    closes = fetch_recent_closes(ticker, n=1)
+    return closes[-1] if closes else None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -217,23 +226,37 @@ def read_signal() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PaperSafetyGuard:
+    """
+    Three guard outcomes (checked in priority order):
 
-    def __init__(self, signal: dict, portfolio: dict):
-        self.signal    = signal
-        self.portfolio = portfolio
-        self._daily_stop_triggered = False
+      hard block      → no trade at all today (double submission, kill switch
+                        with nothing left to flatten)
+      force flatten   → sets signal["_force_flatten"]; the plan becomes a full
+                        exit (kill switch / DD halt while still holding shares —
+                        a halt must REDUCE leveraged exposure, never freeze it)
+      buy block       → collected in self.buy_block_reasons; applied only if
+                        the computed plan is a BUY (crash day, gap guard,
+                        VIX extreme, trade-frequency cap). Sells always pass.
+    """
+
+    def __init__(self, signal: dict, portfolio: dict,
+                 tqqq_closes: Optional[list] = None):
+        self.signal            = signal
+        self.portfolio         = portfolio
+        self.tqqq_closes       = tqqq_closes or []   # [prev_close, last_close]
+        self.buy_block_reasons = []
 
     def run_all_checks(self) -> tuple[bool, str]:
         """
-        Returns (blocked: bool, reason: str).
-        Checks run in priority order; first failure short-circuits.
+        Returns (blocked: bool, reason: str) for HARD blocks only.
+        Buy-only blocks accumulate in self.buy_block_reasons.
         """
         checks = [
-            ("kill_switch",     self._check_kill_switch),
             ("double_submit",   self._check_double_submission),
+            ("kill_switch",     self._check_kill_switch),
             ("portfolio_dd",    self._check_drawdown),
             ("trade_frequency", self._check_trade_frequency),
-            ("daily_loss",      self._check_daily_loss),      # mutates signal
+            ("crash_day",       self._check_crash_day),
             ("gap_guard",       self._check_gap_guard),
             ("vix_extreme",     self._check_vix_extreme),
         ]
@@ -243,21 +266,37 @@ class PaperSafetyGuard:
                 logger.warning(f"Guard [{name}] BLOCKED: {reason}")
                 return True, reason
             logger.debug(f"Guard [{name}] ✓")
-        logger.info("All paper safety guards passed ✓")
+        if self.buy_block_reasons:
+            logger.warning(
+                f"BUY orders blocked today ({len(self.buy_block_reasons)} guard(s)): "
+                + " | ".join(self.buy_block_reasons)
+            )
+        logger.info("Paper safety guards passed ✓ (hard blocks)")
         return False, ""
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _flatten_or_block(self, reason: str) -> tuple[bool, str]:
+        """Holding shares → force a full exit; flat → hard block (buys frozen)."""
+        if self.portfolio.get("tqqq_shares", 0) > 0:
+            logger.warning(f"{reason} — flattening position (full exit at close)")
+            self.signal["_force_flatten"] = True
+            self.signal["_force_flatten_reason"] = reason
+            return False, ""
+        return True, f"{reason} — no position held, all trading frozen"
 
     # ── Guards ────────────────────────────────────────────────────────────────
-
-    def _check_kill_switch(self) -> tuple[bool, str]:
-        if KILL_SWITCH_PATH.exists():
-            reason = KILL_SWITCH_PATH.read_text().strip()
-            return True, f"Kill switch active — {reason}"
-        return False, ""
 
     def _check_double_submission(self) -> tuple[bool, str]:
         last = self.portfolio.get("last_trade_date")
         if last and str(last)[:10] == str(date.today()):
             return True, f"Already executed today ({last})"
+        return False, ""
+
+    def _check_kill_switch(self) -> tuple[bool, str]:
+        if KILL_SWITCH_PATH.exists():
+            reason = KILL_SWITCH_PATH.read_text().strip()
+            return self._flatten_or_block(f"Kill switch active — {reason}")
         return False, ""
 
     def _check_drawdown(self) -> tuple[bool, str]:
@@ -272,62 +311,59 @@ class PaperSafetyGuard:
                 f"(peak=${peak:,.0f}, NLV=${nlv:,.0f}) — kill switch activated"
             )
             KILL_SWITCH_PATH.write_text(msg)
-            return True, msg
+            return self._flatten_or_block(msg)
         if dd >= 0.30:
             logger.warning(f"Drawdown warning: {dd:.1%} (halt at {DD_HALT:.1%})")
         return False, ""
 
     def _check_trade_frequency(self) -> tuple[bool, str]:
+        """Buy-block only — a frequency cap must never stop risk-reducing sells."""
         ytd = self.portfolio.get("total_trades_ytd", 0)
         if ytd >= MAX_TRADES_YTD:
-            return True, (
-                f"Trade count {ytd} ≥ {MAX_TRADES_YTD}/year limit. "
-                "Frequent TQQQ trading destroys returns via 3x decay."
+            self.buy_block_reasons.append(
+                f"Trade count {ytd} ≥ {MAX_TRADES_YTD}/year limit — BUYs blocked "
+                "(frequent TQQQ trading destroys returns via 3x decay)"
+            )
+        elif ytd >= MAX_TRADES_YTD // 2:
+            logger.warning(
+                f"Trade frequency warning: {ytd}/{MAX_TRADES_YTD} trades this year — "
+                "investigate churn before the cap blocks buying"
             )
         return False, ""
 
-    def _check_daily_loss(self) -> tuple[bool, str]:
-        """Non-blocking: mutates signal if daily loss exceeds threshold."""
-        last_fill = self.portfolio.get("last_fill_price", 0.0)
-        shares    = self.portfolio.get("tqqq_shares", 0)
-        if last_fill <= 0 or shares <= 0:
+    def _check_crash_day(self) -> tuple[bool, str]:
+        """
+        Same-day crash protection: TQQQ down ≥ daily_stop_loss vs the previous
+        close → block BUYs today. Exits are handled by the replayed strategy
+        state on the next signal (mirrors the backtest engine's same-bar stop
+        with one bar of lag). This replaces the old last-fill-relative stop,
+        which sold entire positions at the close and re-bought full size the
+        next day — two losing round trips in the first week of paper trading.
+        """
+        if len(self.tqqq_closes) < 2:
+            logger.warning("Crash-day check skipped: insufficient price history")
             return False, ""
-        try:
-            price = fetch_close("TQQQ")
-            if price is None:
-                return False, ""
-            daily_loss = (last_fill - price) / last_fill
-            if daily_loss >= DAILY_STOP:
-                logger.warning(
-                    f"Daily stop-loss triggered ({daily_loss:.1%} ≥ {DAILY_STOP:.1%}) "
-                    "— overriding to full exit"
-                )
-                self.signal["_daily_stop_triggered"] = True
-                self._daily_stop_triggered = True
-        except Exception as exc:
-            logger.warning(f"Daily loss check skipped: {exc}")
-        return False, ""   # never blocks, only mutates
+        prev_close, last_close = self.tqqq_closes[-2], self.tqqq_closes[-1]
+        if prev_close <= 0:
+            return False, ""
+        day_change = (last_close - prev_close) / prev_close
+        logger.info(f"Crash-day check: TQQQ {day_change:+.1%} vs prev close "
+                    f"(buy-block at {-DAILY_STOP:.0%})")
+        if day_change <= -DAILY_STOP:
+            self.buy_block_reasons.append(
+                f"TQQQ {day_change:+.1%} today (≥ {DAILY_STOP:.0%} drop) — "
+                "no BUYs into a crash; strategy state re-evaluates tomorrow"
+            )
+        return False, ""
 
     def _check_gap_guard(self) -> tuple[bool, str]:
         """Read gap_guard from the signal row (logged at signal-generation time)."""
-        gap_triggered = str(self.signal.get("gap_guard", "")).lower() in ("true", "1")
-        if not gap_triggered:
-            return False, ""
-
-        action   = str(self.signal.get("action", "HOLD"))
-        weight_a = float(self.signal.get("weight_a", 0))
-        is_buying = (
-            action in ("INCREASE_A", "HOLD")
-            and weight_a > 0
-            and not self.signal.get("_daily_stop_triggered", False)
-        )
-        if is_buying:
+        if str(self.signal.get("gap_guard", "")).lower() in ("true", "1"):
             gap_pct = self.signal.get("gap_pct", "?")
-            return True, (
+            self.buy_block_reasons.append(
                 f"Gap guard triggered ({gap_pct}% open gap) — "
-                "BUY orders blocked. 87% of >5% gap-down days close lower."
+                "87% of >5% gap-down days close lower"
             )
-        logger.warning("Gap guard triggered but action is SELL/exit — allowing")
         return False, ""
 
     def _check_vix_extreme(self) -> tuple[bool, str]:
@@ -338,19 +374,9 @@ class PaperSafetyGuard:
                 return False, ""
             logger.info(f"VIX close: {vix:.1f}  (extreme threshold: {VIX_EXTREME})")
             if vix >= VIX_EXTREME:
-                action   = self.signal.get("action", "HOLD")
-                weight_a = float(self.signal.get("weight_a", 0))
-                is_buying = (
-                    action in ("INCREASE_A", "HOLD")
-                    and weight_a > 0
-                    and not self.signal.get("_daily_stop_triggered", False)
+                self.buy_block_reasons.append(
+                    f"Live VIX={vix:.1f} ≥ {VIX_EXTREME} (extreme crash)"
                 )
-                if is_buying:
-                    return True, (
-                        f"Live VIX={vix:.1f} ≥ {VIX_EXTREME} (extreme crash). "
-                        "BUY orders blocked."
-                    )
-                logger.warning(f"VIX extreme ({vix:.1f}) but action is SELL — allowing")
         except Exception as exc:
             logger.warning(f"VIX check skipped: {exc}")
         return False, ""
@@ -360,19 +386,63 @@ class PaperSafetyGuard:
 #  Allocation math  (mirrors position_reconciler.py without IB dependency)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _parse_exposure(signal: dict, key: str) -> Optional[float]:
+    """Read an exposure field from the signal row; None when missing/blank."""
+    raw = signal.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(val) or val < 0:
+        return None
+    return val
+
+
 def compute_target_pct(signal: dict) -> float:
-    """Blended TQQQ allocation as fraction of NLV."""
-    if signal.get("_daily_stop_triggered"):
-        logger.warning("Daily stop override: target = 0.0% (full exit)")
+    """
+    Blended TQQQ allocation as fraction of NLV.
+
+    Primary path: weight_a×exposure_a + weight_b×exposure_b, where the
+    exposures are the replayed per-strategy states (backtester/exposure_replay
+    via daily_signal.py). This is the allocation the validated backtest
+    actually holds — including its MA/VIX exits, vol scaling, and crash brake.
+
+    Fallback (exposure fields missing): weight×max_position_pct. That floors
+    exposure at ~66% TQQQ even in high_vol — log loudly, this is the legacy
+    behavior that produced 60%+ drawdowns in replay.
+    """
+    if signal.get("_force_flatten"):
+        logger.warning(
+            f"Force-flatten override: target = 0.0% (full exit) — "
+            f"{signal.get('_force_flatten_reason', 'risk halt')}"
+        )
         return 0.0
-    weight_a  = float(signal.get("weight_a", 0.75))
-    weight_b  = float(signal.get("weight_b", 0.25))
+
+    weight_a = float(signal.get("weight_a", 0.75))
+    weight_b = float(signal.get("weight_b", 0.25))
+
+    exp_a = _parse_exposure(signal, "exposure_a")
+    exp_b = _parse_exposure(signal, "exposure_b")
+
+    if exp_a is not None and exp_b is not None:
+        blended = weight_a * exp_a + weight_b * exp_b
+        logger.info(
+            f"Target allocation (exposure state): {weight_a:.0%}×{exp_a:.1%} + "
+            f"{weight_b:.0%}×{exp_b:.1%} = {blended:.1%}"
+        )
+        return blended
+
     max_pos_a = STRATEGY_A_CONFIG["max_position_pct"]
     max_pos_b = STRATEGY_B_CONFIG["max_position_pct"]
     blended   = weight_a * max_pos_a + weight_b * max_pos_b
-    logger.info(
-        f"Target allocation: {weight_a:.0%}×{max_pos_a:.0%} + "
-        f"{weight_b:.0%}×{max_pos_b:.0%} = {blended:.1%}"
+    logger.error(
+        "Signal row has no exposure_a/exposure_b — falling back to "
+        f"max-position caps: {weight_a:.0%}×{max_pos_a:.0%} + "
+        f"{weight_b:.0%}×{max_pos_b:.0%} = {blended:.1%}. "
+        "This OVER-ALLOCATES whenever the strategies are de-risked; "
+        "re-run daily_signal.py."
     )
     return blended
 
@@ -396,8 +466,13 @@ def compute_plan(
     drift_pct      = abs(target_pct - current_pct)
     delta_shares   = target_shares - current_shares
 
-    # Drift gate: skip if already close enough
-    within_tolerance = drift_pct < DRIFT_THRESHOLD
+    # Drift gate: skip if already close enough.
+    # A force-flatten (kill switch / DD halt) always sells to zero — never
+    # leave residual leveraged shares behind a halt.
+    force_flatten    = bool(signal.get("_force_flatten")) and current_shares > 0
+    within_tolerance = drift_pct < DRIFT_THRESHOLD and not force_flatten
+    if force_flatten:
+        target_shares, delta_shares = 0, -current_shares
 
     logger.info(
         f"Plan: current={current_shares}sh ({current_pct:.1%})  "
@@ -543,7 +618,15 @@ def build_email(signal: dict, plan: dict, portfolio_after: dict,
 
 def run(dry_run: bool = False) -> bool:
     """
-    Full paper execution flow. Returns True on success / clean no-action.
+    Full paper execution flow.
+
+    Returns True for any cleanly-handled outcome — a trade, a no-action day, a
+    guard hard-block (kill switch / DD halt), or a buy-block (gap/crash/VIX/
+    frequency). These are NORMAL: the automation worked and decided correctly,
+    so the workflow stays green and still commits the audit record.
+
+    Returns False ONLY on a genuine operational error (signal unreadable, price
+    feed down) — those should turn the workflow red so a human investigates.
     """
     now = datetime.now(EST).strftime("%Y-%m-%d %H:%M %Z")
     logger.info("=" * 65)
@@ -563,36 +646,100 @@ def run(dry_run: bool = False) -> bool:
 
     # ── Step 2: Load portfolio state ──────────────────────────────────────
     portfolio = load_portfolio()
+
+    # Trade counter is per calendar year — reset on year rollover
+    last_trade = str(portfolio.get("last_trade_date") or "")
+    if last_trade[:4] and last_trade[:4] != str(date.today().year):
+        logger.info(f"New calendar year — resetting trade counter "
+                    f"(was {portfolio.get('total_trades_ytd', 0)})")
+        portfolio["total_trades_ytd"] = 0
+
     logger.info(
         f"Portfolio: {portfolio['tqqq_shares']} TQQQ  "
         f"cash=${portfolio['cash']:,.2f}  NLV=${portfolio['nlv']:,.2f}"
     )
 
-    # ── Step 3: Fetch TQQQ closing price ──────────────────────────────────
-    tqqq_price = fetch_close("TQQQ")
-    if tqqq_price is None:
+    # ── Step 3: Fetch TQQQ closing prices (prev + last, for crash check) ──
+    tqqq_closes = fetch_recent_closes("TQQQ", n=2)
+    if not tqqq_closes:
         logger.error("Cannot fetch TQQQ price — aborting to prevent sizing errors")
         send_alert(
             subject="[PAPER] BLOCKED — TQQQ price unavailable",
             body="yfinance could not return today's TQQQ closing price.",
         )
         return False
+    tqqq_price = tqqq_closes[-1]
 
     # Update NLV with current price before guards run
     portfolio["nlv"] = round(portfolio["tqqq_shares"] * tqqq_price + portfolio["cash"], 2)
 
     # ── Step 4: Safety guards ──────────────────────────────────────────────
-    guard            = PaperSafetyGuard(signal=signal, portfolio=portfolio)
+    guard            = PaperSafetyGuard(signal=signal, portfolio=portfolio,
+                                        tqqq_closes=tqqq_closes)
     blocked, reason  = guard.run_all_checks()
 
     if blocked:
+        # Persist the no-action record so the halt is visible in the audit log.
+        if not dry_run:
+            append_trade({
+                "date":               str(date.today()),
+                "regime":             signal.get("regime", "?"),
+                "action":             signal.get("action", "?"),
+                "status":             "blocked",
+                "tqqq_shares_before": portfolio["tqqq_shares"],
+                "delta_shares":       0,
+                "tqqq_shares_after":  portfolio["tqqq_shares"],
+                "fill_price":         "",
+                "slippage_bps":       0,
+                "cash_before":        portfolio["cash"],
+                "cash_after":         portfolio["cash"],
+                "nlv_before":         portfolio["nlv"],
+                "nlv_after":          portfolio["nlv"],
+                "target_pct":         "",
+                "actual_pct":         "",
+                "gap_guard":          signal.get("gap_guard", False),
+                "notes":              f"BLOCKED: {reason}",
+            })
+            portfolio["peak_equity"] = max(portfolio["peak_equity"], portfolio["nlv"])
+            save_portfolio(portfolio)
         send_alert(*build_email(signal, {"delta_shares": 0, "status": "blocked"},
                                 portfolio, 0, True, reason, dry_run))
-        return False
+        return True   # handled cleanly — halt is not an automation failure
 
     # ── Step 5: Compute rebalancing plan ──────────────────────────────────
     plan = compute_plan(signal, portfolio, tqqq_price)
     logger.info(f"Plan: {plan['reason']}")
+
+    # Buy-only guards (crash day, gap guard, VIX extreme, trade frequency):
+    # applied to the PLAN, not the action heuristics — sells always proceed.
+    if plan["proceed"] and plan.get("direction") == "BUY" and guard.buy_block_reasons:
+        reason = " | ".join(guard.buy_block_reasons)
+        logger.warning(f"BUY plan blocked: {reason}")
+        if not dry_run:
+            append_trade({
+                "date":               str(date.today()),
+                "regime":             signal.get("regime", "?"),
+                "action":             signal.get("action", "?"),
+                "status":             "buy_blocked",
+                "tqqq_shares_before": portfolio["tqqq_shares"],
+                "delta_shares":       0,
+                "tqqq_shares_after":  portfolio["tqqq_shares"],
+                "fill_price":         "",
+                "slippage_bps":       0,
+                "cash_before":        portfolio["cash"],
+                "cash_after":         portfolio["cash"],
+                "nlv_before":         portfolio["nlv"],
+                "nlv_after":          portfolio["nlv"],
+                "target_pct":         round(plan["target_pct"] * 100, 2),
+                "actual_pct":         round(plan["current_pct"] * 100, 2),
+                "gap_guard":          signal.get("gap_guard", False),
+                "notes":              f"BUY blocked: {reason}",
+            })
+            portfolio["peak_equity"] = max(portfolio["peak_equity"], portfolio["nlv"])
+            save_portfolio(portfolio)
+        send_alert(*build_email(signal, {"delta_shares": 0, "status": "buy_blocked"},
+                                portfolio, 0, True, reason, dry_run))
+        return True   # handled cleanly — a buy-block is the system working
 
     # ── Step 6: Execute fill (or skip) ────────────────────────────────────
     fill_price     = 0.0
@@ -746,8 +893,9 @@ def run_demo() -> None:
 
         # ── Step 3: Live prices ────────────────────────────────────────────
         print("Fetching live prices …")
-        tqqq_price = fetch_close("TQQQ")
-        vix_price  = fetch_close("^VIX")
+        tqqq_closes = fetch_recent_closes("TQQQ", n=2)
+        tqqq_price  = tqqq_closes[-1] if tqqq_closes else None
+        vix_price   = fetch_close("^VIX")
         if tqqq_price is None:
             print("✗ Cannot fetch TQQQ price — aborting demo")
             return
@@ -756,7 +904,8 @@ def run_demo() -> None:
         )
 
         # ── Step 4: Safety guards ──────────────────────────────────────────
-        guard           = PaperSafetyGuard(signal=signal, portfolio=portfolio)
+        guard           = PaperSafetyGuard(signal=signal, portfolio=portfolio,
+                                           tqqq_closes=tqqq_closes)
         blocked, reason = guard.run_all_checks()
 
         # ── Step 5: Compute plan ───────────────────────────────────────────
@@ -765,6 +914,15 @@ def run_demo() -> None:
             "target_pct": 0, "current_pct": 0, "nlv": portfolio["nlv"],
             "reason": reason,
         }
+
+        # Buy-only guards apply to the plan (sells always proceed)
+        if plan["proceed"] and plan.get("direction") == "BUY" and guard.buy_block_reasons:
+            blocked, reason = True, " | ".join(guard.buy_block_reasons)
+            plan = {
+                "proceed": False, "status": "buy_blocked", "delta_shares": 0,
+                "target_pct": plan["target_pct"], "current_pct": plan["current_pct"],
+                "nlv": portfolio["nlv"], "reason": reason,
+            }
 
         # ── Step 6: Execute fill ───────────────────────────────────────────
         fill_price      = 0.0

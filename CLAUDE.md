@@ -249,6 +249,24 @@ VIX 5-day avg (T-1) ──► threshold check ──────┘
 
 ## Known Issues / Gotchas
 
+- **Executor uses replayed exposure state (2026-06 audit fix)**: live position sizing is
+  `target = weight_a×exposure_a + weight_b×exposure_b`, where exposures come from
+  `backtester/exposure_replay.py` (replays both locked strategies through the same
+  Backtester used for validation) and are written into `signal_history.csv` by
+  `daily_signal.py`. This is what reconciles live behavior with the backtest — the
+  earlier `weight×max_position_pct` formula floored TQQQ exposure at ~66% even in
+  high_vol and replayed to ~64% MaxDD (vs 37.5% as-designed). If `exposure_a/b` are
+  missing from a signal row the executors fall back to max-position caps and log an
+  ERROR — re-run `daily_signal.py` rather than trading on the fallback.
+- **Risk halts FLATTEN then freeze, they do not freeze a position**: kill switch and the
+  35% DD halt set `signal["_force_flatten"]` → full exit when holding shares; they only
+  hard-block (freeze buys) once the account is already flat. The old behavior froze a
+  leveraged long in place and rode it down (replay: −81%).
+- **No last-fill daily stop**: the old 7%-below-last-fill full-exit stop caused
+  sell-low/rebuy-higher whipsaw (−20% in week 1 of paper trading). Replaced by a
+  same-day crash check (TQQQ ≤ −7% vs previous close → block BUYs only); strategy exits
+  own de-risking via the exposure state. Buy-only guards (crash day, gap, VIX≥45, trade
+  frequency) block BUY *plans* only — risk-reducing sells always pass.
 - **Do not use `--no-chart` with strategy_runner** when running from notebook — charts are needed there
 - **VIX data**: fetched as `^VIX` from yfinance. Sometimes has weekend gaps — ffill handles it
 - **TQQQ inception**: 2010-02-11. Pre-2010 data is synthetic (QQQ × 3x proxy)

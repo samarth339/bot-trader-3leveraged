@@ -3,12 +3,13 @@ test_guard_coverage.py — Safety Guard Coverage Gaps
 ======================================================
 Fills the three coverage gaps not addressed in test_ibkr_safety.py:
 
-  1. Guard 7 (_check_daily_loss) — the only non-blocking, signal-mutating guard.
-     Tests: skip conditions, mutation behavior, fail-open on price errors.
+  1. Crash-day guard (_check_crash_day) — BUY-only block when TQQQ fell ≥7%
+     vs the previous close. Never hard-blocks; accumulates a buy_block_reason.
+     (Replaces the old last-fill daily-stop, which whipsawed −20% in week 1.)
 
-  2. Guard priority & short-circuit — first failing guard stops the chain.
-     Tests: guard 1 blocks before guard 10 runs; guard 7 (non-blocking) does
-     NOT short-circuit subsequent guards; all 10 run on clean pass.
+  2. Guard priority & short-circuit — first HARD-blocking guard stops the chain.
+     Tests: a hard block short-circuits; buy-only guards do NOT short-circuit
+     and accumulate; kill switch flattens (not blocks) when holding a position.
 
   3. P3 regression — VIX scaling was evaluated (2010-2026) and removed.
      compute_blended_target_pct() must be VIX-agnostic.
@@ -100,170 +101,131 @@ def _passthrough():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Guard 7 — Daily Loss (non-blocking, signal-mutating)
+#  Crash-day guard — BUY-only block (never hard-blocks, never force-sells)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGuard7DailyLoss:
+class TestCrashDayBuyBlock:
     """
-    Guard 7 is special: it NEVER blocks execution (always returns blocked=False)
-    but mutates signal['_daily_stop_triggered'] = True when the daily loss
-    threshold is breached.  Downstream guards (8-10) and the reconciler both
-    check this flag to force a full position exit.
+    _check_crash_day compares TQQQ's last close to the PREVIOUS close. When the
+    drop is ≥ daily_stop_loss it appends a buy_block_reason (BUYs blocked today)
+    but NEVER hard-blocks and NEVER force-sells. Exits are owned by the replayed
+    strategy state — this only stops buying into a crash.
     """
 
-    def _make_price_df(self, price: float) -> pd.DataFrame:
-        """Minimal yfinance 1m dataframe with a Close column."""
-        idx = pd.date_range("2026-01-15 09:30", periods=2, freq="1min")
-        return pd.DataFrame({"Close": [price, price + 0.1]}, index=idx)
+    def _make_daily_df(self, prev_close: float, last_close: float) -> pd.DataFrame:
+        """Minimal yfinance daily dataframe with two closes."""
+        idx = pd.date_range("2026-01-14", periods=2, freq="1D")
+        return pd.DataFrame({"Close": [prev_close, last_close]}, index=idx)
 
-    def test_guard7_never_blocks_even_on_large_loss(
-        self, fully_stubbed_guard, tmp_path, monkeypatch
-    ):
-        """
-        Even when TQQQ drops 20% intraday (well above 7% stop),
-        guard 7 must return blocked=False (it mutates, not blocks).
-        """
-        from ibkr.safety_guard import SafetyGuard
-
+    def test_crash_day_blocks_buys_on_large_drop(self, fully_stubbed_guard):
+        """TQQQ −10% vs prev close (≥7%) → buy_block_reason recorded, not blocked."""
         guard = fully_stubbed_guard
-        current_price = 80.0   # last_fill=100, loss = (100-80)/100 = 20%
-
-        with patch("ibkr.safety_guard.yf.download", return_value=self._make_price_df(current_price)):
-            result = guard._check_daily_loss()
-
-        assert not result.blocked, (
-            "Guard 7 must NEVER block — it only mutates the signal dict"
+        df = self._make_daily_df(100.0, 90.0)   # −10%
+        with patch("ibkr.safety_guard.yf.download", return_value=df):
+            result = guard._check_crash_day()
+        assert not result.blocked, "crash-day guard must never HARD block"
+        assert guard.buy_block_reasons, "a buy-block reason must be recorded on a crash"
+        assert not guard.signal.get("_force_flatten", False), (
+            "crash-day guard must NOT force-sell (no whipsaw exit)"
         )
 
-    def test_guard7_mutates_signal_on_loss_above_threshold(
-        self, fully_stubbed_guard, tmp_path, monkeypatch
-    ):
-        """
-        Loss = (100 - 80) / 100 = 20% ≥ 7% limit → signal must be mutated.
-        """
-        from ibkr.safety_guard import SafetyGuard
-
+    def test_crash_day_no_block_on_small_drop(self, fully_stubbed_guard):
+        """TQQQ −2% (below 7%) → no buy-block."""
         guard = fully_stubbed_guard
-        assert "_daily_stop_triggered" not in guard.signal  # pre-condition
+        df = self._make_daily_df(100.0, 98.0)   # −2%
+        with patch("ibkr.safety_guard.yf.download", return_value=df):
+            result = guard._check_crash_day()
+        assert not result.blocked
+        assert not guard.buy_block_reasons
 
-        with patch("ibkr.safety_guard.yf.download", return_value=self._make_price_df(80.0)):
-            guard._check_daily_loss()
-
-        assert guard.signal.get("_daily_stop_triggered") is True, (
-            "signal['_daily_stop_triggered'] must be True when loss ≥ daily_stop_loss"
-        )
-
-    def test_guard7_does_not_mutate_on_small_loss(
-        self, fully_stubbed_guard, tmp_path, monkeypatch
-    ):
-        """
-        Loss = (100 - 98) / 100 = 2% < 7% limit → signal must NOT be mutated.
-        """
-        from ibkr.safety_guard import SafetyGuard
-
+    def test_crash_day_no_block_on_gain(self, fully_stubbed_guard):
+        """A green day records no buy-block."""
         guard = fully_stubbed_guard
+        df = self._make_daily_df(100.0, 105.0)
+        with patch("ibkr.safety_guard.yf.download", return_value=df):
+            guard._check_crash_day()
+        assert not guard.buy_block_reasons
 
-        with patch("ibkr.safety_guard.yf.download", return_value=self._make_price_df(98.0)):
-            guard._check_daily_loss()
+    def test_crash_day_fails_open_on_fetch_error(self, fully_stubbed_guard):
+        """A network error must never block execution."""
+        with patch("ibkr.safety_guard.yf.download", side_effect=RuntimeError("net")):
+            result = fully_stubbed_guard._check_crash_day()
+        assert not result.blocked
+        assert not fully_stubbed_guard.buy_block_reasons
 
-        assert not guard.signal.get("_daily_stop_triggered", False), (
-            "signal must NOT be mutated when daily loss is below threshold"
-        )
+    def test_crash_day_fails_open_on_insufficient_data(self, fully_stubbed_guard):
+        """A single-bar (or empty) response can't compute a day change → skip."""
+        one_bar = pd.DataFrame({"Close": [90.0]},
+                               index=pd.date_range("2026-01-15", periods=1))
+        with patch("ibkr.safety_guard.yf.download", return_value=one_bar):
+            result = fully_stubbed_guard._check_crash_day()
+        assert not result.blocked
+        assert not fully_stubbed_guard.buy_block_reasons
 
-    def test_guard7_skips_when_no_fill_history(
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Kill switch / DD halt — flatten when holding, hard-block when flat
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFlattenThenFreeze:
+    """
+    A risk halt must REDUCE leveraged exposure, never freeze a TQQQ position.
+    Guards 1 (kill switch) and 5 (DD halt) set signal['_force_flatten'] when
+    shares are held (so the reconciler computes a full exit) and only HARD-block
+    when the account is already flat (nothing to sell — freeze buys).
+    """
+
+    def test_kill_switch_flattens_when_holding(
         self, mock_account, bull_signal, tmp_path, monkeypatch
     ):
-        """
-        If last_fill_price == 0 (no prior fills), guard 7 must skip entirely.
-        No mutation, no network call.
-        """
-        import ibkr.state as st
-        from ibkr.safety_guard import SafetyGuard, SHADOW_STATE_PATH
+        from ibkr import kill_switch
+        from ibkr.safety_guard import SafetyGuard
+        monkeypatch.setattr("ibkr.safety_guard.SHADOW_STATE_PATH",
+                            tmp_path / "shadow_state.json")
+        (tmp_path / "shadow_state.json").write_text('{"completed": true}')
+        kill_switch.activate("test — flatten path")
 
-        shadow = tmp_path / "shadow_state.json"
-        shadow.write_text('{"completed": true}')
-        monkeypatch.setattr("ibkr.safety_guard.SHADOW_STATE_PATH", shadow)
-
-        # State with no fill price
-        state_data = {"last_fill_price": 0.0, "last_execution_date": None}
-        (tmp_path / "ibkr_state.json").write_text(json.dumps(state_data))
-
+        mock_account.positions = {"TQQQ": 50}   # holding
         bull_signal["shadow"] = False
-        guard = SafetyGuard(account_state=mock_account, signal=bull_signal)
+        guard  = SafetyGuard(account_state=mock_account, signal=bull_signal)
+        result = guard._check_kill_switch()
 
-        with patch("ibkr.safety_guard.yf.download") as mock_dl:
-            result = guard._check_daily_loss()
+        assert not result.blocked, "kill switch must NOT hard-block while holding"
+        assert guard.signal.get("_force_flatten") is True, (
+            "kill switch must force a full exit while holding a position"
+        )
 
-        mock_dl.assert_not_called(), "yfinance should NOT be called when no fill history"
-        assert not result.blocked
-        assert not guard.signal.get("_daily_stop_triggered", False)
-
-    def test_guard7_skips_when_no_tqqq_position(
-        self, tmp_path, monkeypatch
+    def test_kill_switch_hard_blocks_when_flat(
+        self, mock_account, bull_signal, tmp_path, monkeypatch
     ):
-        """
-        If account holds 0 TQQQ shares, guard 7 must skip (nothing to stop-loss).
-        """
-        import ibkr.state as st
-        from ibkr.account import AccountState
-        from ibkr.safety_guard import SafetyGuard, SHADOW_STATE_PATH
-        from datetime import date
+        from ibkr import kill_switch
+        from ibkr.safety_guard import SafetyGuard
+        kill_switch.activate("test — freeze path")
 
-        import ibkr.kill_switch as ks
-        monkeypatch.setattr(ks, "KILL_SWITCH_PATH", tmp_path / "ibkr_kill.flag")
-        monkeypatch.setattr(st, "STATE_PATH",       tmp_path / "ibkr_state.json")
+        mock_account.positions = {}   # flat
+        bull_signal["shadow"] = False
+        guard  = SafetyGuard(account_state=mock_account, signal=bull_signal)
+        result = guard._check_kill_switch()
 
-        shadow = tmp_path / "shadow_state.json"
-        shadow.write_text('{"completed": true}')
-        monkeypatch.setattr("ibkr.safety_guard.SHADOW_STATE_PATH", shadow)
+        assert result.blocked, "kill switch must hard-block when there is nothing to sell"
+        assert not guard.signal.get("_force_flatten", False)
 
-        state_data = {"last_fill_price": 100.0, "last_execution_date": None}
+    def test_drawdown_halt_flattens_when_holding(
+        self, mock_account, bull_signal, tmp_path, monkeypatch
+    ):
+        from ibkr.safety_guard import SafetyGuard
+        # peak well above current NLV → DD beyond the halt threshold
+        state_data = {"peak_equity": 100_000.0, "total_trades_ytd": 0,
+                      "last_fill_price": 80.0}
         (tmp_path / "ibkr_state.json").write_text(json.dumps(state_data))
 
-        acc = AccountState()
-        acc.net_liquidation = 10_000.0
-        acc.available_funds = 10_000.0
-        acc.cash_balance    = 10_000.0
-        acc.positions       = {}          # no TQQQ position
-        acc.avg_costs       = {}
-
-        signal = {
-            "as_of_date": date.today().isoformat(), "signal_date": date.today().isoformat(),
-            "regime": "bull", "action": "HOLD",
-            "weight_a": 0.75, "weight_b": 0.25,
-            "shadow": False,
-        }
-        guard = SafetyGuard(account_state=acc, signal=signal)
-
-        with patch("ibkr.safety_guard.yf.download") as mock_dl:
-            result = guard._check_daily_loss()
-
-        mock_dl.assert_not_called(), "yfinance must not be called when holding no TQQQ"
-        assert not result.blocked
-
-    def test_guard7_fails_open_on_price_fetch_error(
-        self, fully_stubbed_guard, tmp_path, monkeypatch
-    ):
-        """
-        If yfinance raises an exception, guard 7 must fail-open (not block).
-        A network error during daily-loss check must never prevent execution.
-        """
-        with patch("ibkr.safety_guard.yf.download", side_effect=RuntimeError("network error")):
-            result = fully_stubbed_guard._check_daily_loss()
+        mock_account.positions = {"TQQQ": 50}
+        bull_signal["shadow"] = False
+        guard  = SafetyGuard(account_state=mock_account, signal=bull_signal)
+        result = guard._check_portfolio_drawdown()
 
         assert not result.blocked
-        assert not fully_stubbed_guard.signal.get("_daily_stop_triggered", False)
-
-    def test_guard7_fails_open_on_empty_price_data(
-        self, fully_stubbed_guard, tmp_path, monkeypatch
-    ):
-        """
-        If yfinance returns an empty DataFrame, guard 7 must fail-open.
-        """
-        with patch("ibkr.safety_guard.yf.download", return_value=pd.DataFrame()):
-            result = fully_stubbed_guard._check_daily_loss()
-
-        assert not result.blocked
+        assert guard.signal.get("_force_flatten") is True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -296,126 +258,98 @@ class TestGuardPriority:
         bull_signal["shadow"] = False
         return SafetyGuard(account_state=mock_account, signal=bull_signal)
 
-    def test_guard1_kill_switch_short_circuits_all_subsequent(
+    def test_double_submission_short_circuits_all_subsequent(
         self, mock_account, bull_signal, tmp_path, monkeypatch
     ):
         """
-        When guard 1 (kill switch) is active, guards 2-10 must NEVER run.
-        Verifies short-circuit by tracking how many checks were called.
-        """
-        from ibkr import kill_switch
-
-        guard = self._make_complete_guard(mock_account, bull_signal, tmp_path, monkeypatch)
-        kill_switch.activate("test — unit test kill")
-
-        call_log = []
-
-        def tracking_check(name, original_method):
-            def wrapper(self_inner):
-                call_log.append(name)
-                return original_method(self_inner)
-            return wrapper
-
-        from ibkr.safety_guard import SafetyGuard
-
-        result = guard.run_all_checks()
-
-        assert result.blocked, "Kill switch must block"
-        # Only guard 1 should have run — kill switch check is first
-        # (We verify blocked=True with kill-switch reason)
-        assert "kill" in result.reason.lower() or "Kill" in result.reason
-
-    def test_guard_chain_stops_at_first_blocker(
-        self, mock_account, bull_signal, tmp_path, monkeypatch
-    ):
-        """
-        Inject a blocking result at guard 6 (trade frequency) and verify
-        guard 7-10 are NOT called.
+        A hard block (double submission) terminates the chain — later guards
+        do not run. Double-submission is now the first hard guard.
         """
         from ibkr.safety_guard import SafetyGuard, GuardResult
+        from datetime import date
 
         guard = self._make_complete_guard(mock_account, bull_signal, tmp_path, monkeypatch)
 
-        guards_called = []
-
-        def spy(name, original):
-            def wrapper():
-                guards_called.append(name)
-                return original()
-            return wrapper
-
-        # Guard 6 blocks; guard 7 is non-blocking so it should not run after block
-        def blocking_guard6():
-            guards_called.append("trade_frequency")
-            return GuardResult(blocked=True, reason="spy: freq limit")
-
-        def tracking_guard7():
-            guards_called.append("daily_loss")
-            return GuardResult(blocked=False)
-
-        with patch.object(SafetyGuard, "_check_kill_switch",       lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_shadow_mode",       lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_double_submission", lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_market_hours",      lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_portfolio_drawdown",lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_trade_frequency",   lambda s: blocking_guard6()), \
-             patch.object(SafetyGuard, "_check_daily_loss",        lambda s: tracking_guard7()):
-
+        with patch.object(SafetyGuard, "_check_shadow_mode", lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_double_submission",
+                          lambda s: GuardResult(blocked=True, reason="already executed")):
             result = guard.run_all_checks()
 
         assert result.blocked
-        assert "trade_frequency" in guards_called
-        assert "daily_loss" not in guards_called, (
-            "Guard 7 must NOT run after guard 6 blocks the chain"
-        )
+        assert "already executed" in result.reason
 
-    def test_guard7_nonblocking_does_not_short_circuit(
+    def test_chain_stops_at_first_hard_blocker(
         self, mock_account, bull_signal, tmp_path, monkeypatch
     ):
         """
-        Guard 7 is non-blocking: even when it mutates the signal, guards 8-10
-        must still run.  Verifies that non-blocking guards don't accidentally
-        terminate the chain.
+        Inject a hard block at market_hours and verify later guards
+        (kill_switch, etc.) are NOT called.
         """
         from ibkr.safety_guard import SafetyGuard, GuardResult
 
         guard = self._make_complete_guard(mock_account, bull_signal, tmp_path, monkeypatch)
-        guards_after_7 = []
+        guards_called = []
 
-        def tracking_guard8():
-            guards_after_7.append("position_sanity")
+        def blocking_market_hours(s):
+            guards_called.append("market_hours")
+            return GuardResult(blocked=True, reason="spy: closed")
+
+        def tracking_kill(s):
+            guards_called.append("kill_switch")
             return GuardResult(blocked=False)
 
-        def tracking_guard9():
-            guards_after_7.append("vix_extreme")
-            return GuardResult(blocked=False)
-
-        def tracking_guard10():
-            guards_after_7.append("gap_guard")
-            return GuardResult(blocked=False)
-
-        def mutating_guard7():
-            # Guard 7 mutates (non-blocking) — chain must continue
-            guard.signal["_daily_stop_triggered"] = True
-            return GuardResult(blocked=False)
-
-        with patch.object(SafetyGuard, "_check_kill_switch",       lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_shadow_mode",       lambda s: GuardResult(blocked=False)), \
+        with patch.object(SafetyGuard, "_check_shadow_mode",       lambda s: GuardResult(blocked=False)), \
              patch.object(SafetyGuard, "_check_double_submission", lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_market_hours",      lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_portfolio_drawdown",lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_trade_frequency",   lambda s: GuardResult(blocked=False)), \
-             patch.object(SafetyGuard, "_check_daily_loss",        lambda s: mutating_guard7()), \
-             patch.object(SafetyGuard, "_check_position_sanity",   lambda s: tracking_guard8()), \
-             patch.object(SafetyGuard, "_check_vix_extreme",       lambda s: tracking_guard9()), \
-             patch.object(SafetyGuard, "_check_gap_guard",         lambda s: tracking_guard10()):
-
+             patch.object(SafetyGuard, "_check_market_hours",      blocking_market_hours), \
+             patch.object(SafetyGuard, "_check_kill_switch",       tracking_kill):
             result = guard.run_all_checks()
 
-        assert not result.blocked
-        assert "position_sanity" in guards_after_7, "Guard 8 must run after non-blocking guard 7"
-        assert "vix_extreme"     in guards_after_7, "Guard 9 must run after non-blocking guard 7"
-        assert "gap_guard"       in guards_after_7, "Guard 10 must run after non-blocking guard 7"
+        assert result.blocked
+        assert "market_hours" in guards_called
+        assert "kill_switch" not in guards_called, (
+            "Guards after the first hard block must NOT run"
+        )
+
+    def test_buy_only_guards_do_not_short_circuit_and_accumulate(
+        self, mock_account, bull_signal, tmp_path, monkeypatch
+    ):
+        """
+        Buy-only guards (trade_frequency, crash_day, vix_extreme, gap_guard)
+        never block the chain — they accumulate into buy_block_reasons and the
+        run still returns not-blocked, with later guards still executing.
+        """
+        from ibkr.safety_guard import SafetyGuard, GuardResult
+
+        guard = self._make_complete_guard(mock_account, bull_signal, tmp_path, monkeypatch)
+        ran_after = []
+
+        def freq_records_buyblock(s):
+            s.buy_block_reasons.append("freq cap")
+            return GuardResult(blocked=False)
+
+        def crash_records_buyblock(s):
+            s.buy_block_reasons.append("crash day")
+            return GuardResult(blocked=False)
+
+        def tracking_gap(s):
+            ran_after.append("gap_guard")
+            return GuardResult(blocked=False)
+
+        with patch.object(SafetyGuard, "_check_shadow_mode",       lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_double_submission", lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_market_hours",      lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_kill_switch",       lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_portfolio_drawdown",lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_trade_frequency",   freq_records_buyblock), \
+             patch.object(SafetyGuard, "_check_crash_day",         crash_records_buyblock), \
+             patch.object(SafetyGuard, "_check_position_sanity",   lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_vix_extreme",       lambda s: GuardResult(blocked=False)), \
+             patch.object(SafetyGuard, "_check_gap_guard",         tracking_gap):
+            result = guard.run_all_checks()
+
+        assert not result.blocked, "buy-only guards must not hard-block"
+        assert len(guard.buy_block_reasons) == 2, guard.buy_block_reasons
+        assert "gap_guard" in ran_after, "later guards must still run after buy-only guards"
 
     def test_all_10_guards_run_on_clean_pass(
         self, mock_account, bull_signal, tmp_path, monkeypatch
@@ -434,15 +368,15 @@ class TestGuardPriority:
             return tracker
 
         guard_names = [
-            "kill_switch", "shadow_mode", "double_submission", "market_hours",
-            "portfolio_drawdown", "trade_frequency", "daily_loss",
+            "shadow_mode", "double_submission", "market_hours", "kill_switch",
+            "portfolio_drawdown", "trade_frequency", "crash_day",
             "position_sanity", "vix_extreme", "gap_guard",
         ]
 
         method_names = [
-            "_check_kill_switch", "_check_shadow_mode", "_check_double_submission",
-            "_check_market_hours", "_check_portfolio_drawdown", "_check_trade_frequency",
-            "_check_daily_loss", "_check_position_sanity", "_check_vix_extreme",
+            "_check_shadow_mode", "_check_double_submission", "_check_market_hours",
+            "_check_kill_switch", "_check_portfolio_drawdown", "_check_trade_frequency",
+            "_check_crash_day", "_check_position_sanity", "_check_vix_extreme",
             "_check_gap_guard",
         ]
 
@@ -525,10 +459,10 @@ class TestP3VIXScalingRemoved:
             f"Expected {expected:.4f}, got {target:.4f}"
         )
 
-    def test_daily_stop_override_still_works(self):
+    def test_force_flatten_override_still_works(self):
         """
-        The one signal mutation that DOES affect target — daily stop triggered.
-        This must still force target = 0% regardless of weights.
+        The one signal mutation that DOES affect target — force-flatten (set by
+        the kill switch / DD halt). Must force target = 0% regardless of weights.
         """
         from ibkr.position_reconciler import PositionReconciler
 
@@ -537,10 +471,10 @@ class TestP3VIXScalingRemoved:
         signal = {
             "weight_a": 0.75, "weight_b": 0.25,
             "vix_signal": 14.0,
-            "_daily_stop_triggered": True,
+            "_force_flatten": True,
         }
         target = rec.compute_blended_target_pct(signal)
 
         assert target == pytest.approx(0.0), (
-            "Daily stop override must force target=0.0% (full exit)"
+            "Force-flatten override must force target=0.0% (full exit)"
         )

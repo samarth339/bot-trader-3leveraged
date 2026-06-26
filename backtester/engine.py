@@ -224,7 +224,14 @@ class Backtester:
         return price * (1.0 + direction * self.slippage)
 
     # ── Main run loop ──────────────────────────────────────────────────────────
-    def run(self, strategy) -> dict:
+    def run(self, strategy, close_at_end: bool = True) -> dict:
+        """
+        close_at_end: if False, the final open position is NOT force-closed.
+                      Results then include "final_state" with the live position,
+                      so callers (exposure replay) can read the strategy's
+                      current TQQQ exposure. Metrics are unchanged either way
+                      (equity curve is marked-to-market daily).
+        """
         portfolio = Portfolio(self.initial_capital)
         strategy.reset()
         em        = self.execution_model
@@ -328,15 +335,46 @@ class Backtester:
                     fill = self._fill_price("SQQQ", date, +1)
                     portfolio.buy("SQQQ", fill, date, pct=size_pct, exec_model=em)
 
-            portfolio.equity_curve.append({"date": date, "equity": equity})
+            pos_value = 0.0
+            if portfolio.position:
+                pos_value = portfolio.position.shares * prices[portfolio.position.ticker]
+            portfolio.equity_curve.append({
+                "date": date,
+                "equity": equity,
+                "exposure": pos_value / equity if equity > 0 else 0.0,
+            })
+
+        # ── Final position state (read before any forced close) ──────────────
+        last_date   = self.dates[-1]
+        final_state = {
+            "date":         last_date,
+            "cash":         portfolio.cash,
+            "position":     None,
+            "exposure_pct": 0.0,
+        }
+        if portfolio.position:
+            last_prices = {
+                t: float(df.loc[last_date, "close"])
+                for t, df in [("TQQQ", self.tqqq), ("SQQQ", self.sqqq), ("QQQ", self.qqq)]
+            }
+            final_equity = portfolio.equity(last_prices)
+            pos_value    = portfolio.position.shares * last_prices[portfolio.position.ticker]
+            final_state["position"] = {
+                "ticker":      portfolio.position.ticker,
+                "shares":      portfolio.position.shares,
+                "entry_price": portfolio.position.entry_price,
+                "entry_date":  portfolio.position.entry_date,
+            }
+            final_state["exposure_pct"] = pos_value / final_equity if final_equity > 0 else 0.0
 
         # ── Close any open position at end ────────────────────────────────────
-        if portfolio.position:
-            last_date = self.dates[-1]
+        if close_at_end and portfolio.position:
             fill = self._fill_price(portfolio.position.ticker, last_date, -1, model="close")
             portfolio.sell(fill, last_date, reason="end_of_backtest")
 
-        return self._compile_results(portfolio)
+        results = self._compile_results(portfolio)
+        results["final_state"] = final_state
+        return results
 
     # ── Results compiler ──────────────────────────────────────────────────────
     def _compile_results(self, portfolio: Portfolio) -> dict:

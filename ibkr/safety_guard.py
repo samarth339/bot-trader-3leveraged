@@ -5,23 +5,26 @@ ALL 10 guards must pass before any order is submitted.
 First failure wins — subsequent guards are not checked.
 
 Guards (in priority order):
-  1.  Kill switch file present             → hard block
+  1.  Kill switch file present             → flatten position, then freeze buys
   2.  Shadow mode not completed            → soft block
   3.  Already executed today               → dedup block
   4.  Outside execution window             → time block
-  5.  Portfolio drawdown ≥ 50%             → halt + activate kill switch
-  6.  Trades YTD ≥ 100                    → frequency block
-  7.  TQQQ daily loss ≥ 7%               → converts to SELL (does not block)
+  5.  Portfolio drawdown ≥ halt threshold  → activate kill switch + flatten
+  6.  Trades YTD ≥ 100                    → BUY block only (warn at 50)
+  7.  TQQQ crash day (≤ −7% vs prev close) → BUY block only
   8.  Position size > 105% NLV            → sanity block
   9.  Live VIX ≥ 45 (extreme)             → BUY block only
   10. TQQQ overnight gap-down > 5%        → BUY block only
 
-Guard 7 does not block — it mutates the signal dict to force a SELL so the
-order_manager can exit the position safely at close.
-
-Guard 10 does not block SELL orders — reducing exposure on a gap-down day
-is always permitted.  Rationale: 87% of >5% gap-down days close lower than
-the open, making new BUY entries at MOC inadvisable.
+Three outcomes:
+  hard block    — GuardResult(blocked=True): no order today.
+  force flatten — guards 1/5 set signal["_force_flatten"] when shares are
+                  held; the reconciler computes a full exit. A halt must
+                  REDUCE leveraged exposure, never freeze a TQQQ position.
+  buy block     — guards 6/7/9/10 append to self.buy_block_reasons; the
+                  executor blocks the order only if the computed plan is a
+                  BUY. SELL orders always pass — reducing exposure on a bad
+                  day is always permitted.
 
 Usage:
     guard  = SafetyGuard(account_state=account, signal=signal)
@@ -85,21 +88,22 @@ class SafetyGuard:
 
     def __init__(self, account_state: AccountState, signal: dict):
         self.account = account_state
-        self.signal  = signal                    # may be mutated (guard 7)
+        self.signal  = signal                    # may be mutated (guards 1/5)
         self._state  = state_module.load()
+        self.buy_block_reasons: list = []        # applied to BUY plans only
 
     # ── Entry point ────────────────────────────────────────────────────────────
     def run_all_checks(self) -> GuardResult:
         checks = [
-            ("kill_switch",       self._check_kill_switch),
             ("shadow_mode",       self._check_shadow_mode),
             ("double_submission", self._check_double_submission),
             ("market_hours",      self._check_market_hours),
-            ("portfolio_dd",      self._check_portfolio_drawdown),
-            ("trade_frequency",   self._check_trade_frequency),
-            ("daily_loss",        self._check_daily_loss),       # mutates signal
+            ("kill_switch",       self._check_kill_switch),      # may force flatten
+            ("portfolio_dd",      self._check_portfolio_drawdown),  # may force flatten
+            ("trade_frequency",   self._check_trade_frequency),  # BUY block only
+            ("crash_day",         self._check_crash_day),        # BUY block only
             ("position_sanity",   self._check_position_sanity),
-            ("vix_extreme",       self._check_vix_extreme),
+            ("vix_extreme",       self._check_vix_extreme),      # BUY block only
             ("gap_guard",         self._check_gap_guard),        # BUY block only
         ]
         for name, check_fn in checks:
@@ -109,17 +113,31 @@ class SafetyGuard:
                 return result
             logger.debug(f"Guard [{name}] ✓")
 
-        logger.info("All 10 safety guards passed ✓")
+        if self.buy_block_reasons:
+            logger.warning(
+                f"BUY orders blocked today ({len(self.buy_block_reasons)} guard(s)): "
+                + " | ".join(self.buy_block_reasons)
+            )
+        logger.info("All safety guards passed ✓ (hard blocks)")
         return GuardResult(blocked=False)
+
+    # ── Helper: flatten when holding, hard-block when flat ────────────────────
+    def _flatten_or_block(self, reason: str) -> GuardResult:
+        if self.account is not None and self.account.tqqq_shares() > 0:
+            logger.warning(f"{reason} — flattening position (full exit)")
+            self.signal["_force_flatten"] = True
+            self.signal["_force_flatten_reason"] = reason
+            return GuardResult(blocked=False)
+        return GuardResult(
+            blocked=True,
+            reason=f"{reason} — no position held, all trading frozen"
+        )
 
     # ── Guard 1: Kill switch ───────────────────────────────────────────────────
     def _check_kill_switch(self) -> GuardResult:
         if kill_switch.is_active():
             reason = kill_switch.read_reason()
-            return GuardResult(
-                blocked=True,
-                reason=f"Kill switch active — {reason}"
-            )
+            return self._flatten_or_block(f"Kill switch active — {reason}")
         return GuardResult(blocked=False)
 
     # ── Guard 2: Shadow mode ───────────────────────────────────────────────────
@@ -222,7 +240,7 @@ class SafetyGuard:
                 f"(peak=${peak:,.0f}, NLV=${nlv:,.0f}) — kill switch activated"
             )
             kill_switch.activate(msg)
-            return GuardResult(blocked=True, reason=msg)
+            return self._flatten_or_block(msg)
 
         if drawdown >= DD_WARNING_LEVEL:
             logger.warning(
@@ -233,61 +251,64 @@ class SafetyGuard:
         logger.info(f"Portfolio drawdown: {drawdown:.1%}  (limit {limit:.1%}) ✓")
         return GuardResult(blocked=False)
 
-    # ── Guard 6: Trade frequency ───────────────────────────────────────────────
+    # ── Guard 6: Trade frequency (BUY block only) ──────────────────────────────
     def _check_trade_frequency(self) -> GuardResult:
+        """A frequency cap must never stop risk-reducing sells."""
         ytd = self._state.get("total_trades_ytd", 0)
         if ytd >= MAX_TRADES_PER_YEAR:
-            return GuardResult(
-                blocked=True,
-                reason=(
-                    f"YTD trade count ({ytd}) ≥ {MAX_TRADES_PER_YEAR}. "
-                    "Frequent trading destroys 3x ETF returns via compounding decay. "
-                    "Review strategy — this should never trigger under normal config."
-                )
+            self.buy_block_reasons.append(
+                f"YTD trade count ({ytd}) ≥ {MAX_TRADES_PER_YEAR} — BUYs blocked "
+                "(frequent trading destroys 3x ETF returns via compounding decay)"
             )
-        logger.info(f"Trades YTD: {ytd}/{MAX_TRADES_PER_YEAR} ✓")
+        elif ytd >= MAX_TRADES_PER_YEAR // 2:
+            logger.warning(
+                f"Trade frequency warning: {ytd}/{MAX_TRADES_PER_YEAR} trades this "
+                "year — investigate churn before the cap blocks buying"
+            )
+        else:
+            logger.info(f"Trades YTD: {ytd}/{MAX_TRADES_PER_YEAR} ✓")
         return GuardResult(blocked=False)
 
-    # ── Guard 7: Daily loss on TQQQ (non-blocking — mutates signal) ───────────
-    def _check_daily_loss(self) -> GuardResult:
-        last_fill = self._state.get("last_fill_price", 0.0)
-        if last_fill <= 0:
-            return GuardResult(blocked=False)   # no position history
+    # ── Guard 7: Crash day (BUY block only) ────────────────────────────────────
+    def _check_crash_day(self) -> GuardResult:
+        """
+        TQQQ down ≥ daily_stop_loss vs the PREVIOUS CLOSE → block BUYs today.
 
-        current_shares = self.account.tqqq_shares()
-        if current_shares <= 0:
-            return GuardResult(blocked=False)   # not holding TQQQ
-
+        Replaces the old last-fill-relative stop, which force-sold whole
+        positions at the close and re-bought full size the next session
+        (two losing round trips, −20%, in the first week of paper trading).
+        Exits are owned by the replayed strategy state (exposure_a/b in the
+        signal) — it sees today's bar tomorrow, exactly like the backtest's
+        same-bar stop with one bar of execution lag.
+        """
         try:
-            data = yf.download("TQQQ", period="1d", interval="1m", progress=False)
-            if data.empty:
-                logger.warning("Could not fetch live TQQQ price for daily loss check")
+            data = yf.download("TQQQ", period="5d", interval="1d", progress=False)
+            if data.empty or len(data) < 2:
+                logger.warning("Crash-day check skipped: insufficient TQQQ history")
                 return GuardResult(blocked=False)
 
             if isinstance(data.columns, pd.MultiIndex):
                 data = data.droplevel(1, axis=1)
-            current_price = float(data["Close"].iloc[-1])
-            daily_loss    = (last_fill - current_price) / last_fill
-            limit         = RISK_CONFIG["daily_stop_loss"]
+            prev_close = float(data["Close"].iloc[-2])
+            last_price = float(data["Close"].iloc[-1])
+            if prev_close <= 0:
+                return GuardResult(blocked=False)
 
+            day_change = (last_price - prev_close) / prev_close
+            limit      = RISK_CONFIG["daily_stop_loss"]
             logger.info(
-                f"Daily loss check: last_fill=${last_fill:.2f}  "
-                f"current=${current_price:.2f}  loss={daily_loss:.1%}  "
-                f"limit={limit:.1%}"
+                f"Crash-day check: TQQQ {day_change:+.1%} vs prev close "
+                f"(${prev_close:.2f} → ${last_price:.2f}, buy-block at {-limit:.0%})"
             )
-
-            if daily_loss >= limit:
-                logger.warning(
-                    f"Daily stop-loss triggered ({daily_loss:.1%} ≥ {limit:.1%}) — "
-                    "overriding signal to SELL (full exit at close)"
+            if day_change <= -limit:
+                self.buy_block_reasons.append(
+                    f"TQQQ {day_change:+.1%} today (≥ {limit:.0%} drop) — "
+                    "no BUYs into a crash; strategy state re-evaluates tomorrow"
                 )
-                # Mutate the signal so reconciler computes a full-exit plan
-                self.signal["_daily_stop_triggered"] = True
-
         except Exception as exc:
-            logger.warning(f"Daily loss check skipped (fetch error): {exc}")
+            logger.warning(f"Crash-day check skipped (fetch error): {exc}")
 
-        return GuardResult(blocked=False)   # never blocks — only mutates
+        return GuardResult(blocked=False)   # never hard-blocks
 
     # ── Guard 8: Position size sanity ─────────────────────────────────────────
     def _check_position_sanity(self) -> GuardResult:
@@ -330,26 +351,12 @@ class SafetyGuard:
             logger.info(f"Live VIX: {live_vix:.1f}  (extreme threshold: {VIX_EXTREME})")
 
             if live_vix >= VIX_EXTREME:
-                # Only block BUY orders — selling is always permitted
-                weight_a = float(self.signal.get("weight_a", 0))
-                action   = self.signal.get("action", "HOLD")
-
-                is_buying = action in ("INCREASE_A", "HOLD") and weight_a > 0 and \
-                            not self.signal.get("_daily_stop_triggered", False)
-
-                if is_buying:
-                    return GuardResult(
-                        blocked=True,
-                        reason=(
-                            f"Live VIX={live_vix:.1f} ≥ {VIX_EXTREME} (extreme crash). "
-                            "BUY orders blocked as live-market safety override. "
-                            "SELL orders are still permitted."
-                        )
-                    )
-                else:
-                    logger.warning(
-                        f"VIX extreme ({live_vix:.1f}) but action is SELL/exit — allowing"
-                    )
+                # Only blocks BUY orders — selling is always permitted.
+                # Applied by the executor against the computed plan direction.
+                self.buy_block_reasons.append(
+                    f"Live VIX={live_vix:.1f} ≥ {VIX_EXTREME} (extreme crash) — "
+                    "BUY orders blocked as live-market safety override"
+                )
 
         except Exception as exc:
             logger.warning(f"VIX extreme check skipped (fetch error): {exc}")
@@ -367,33 +374,19 @@ class SafetyGuard:
         """
         gap = GapGuard().check()
 
-        if not gap.triggered:
-            return GuardResult(blocked=False)
+        if gap.triggered:
+            # Applied by the executor against the computed plan direction —
+            # SELL orders always pass through.
+            self.buy_block_reasons.append(gap.reason)
 
-        # Only block if we'd be increasing or maintaining long TQQQ exposure.
-        # Same pattern as Guard 9 (vix_extreme) — sells always pass through.
-        action   = self.signal.get("action", "HOLD")
-        weight_a = float(self.signal.get("weight_a", 0))
-        is_buying = (
-            action in ("INCREASE_A", "HOLD")
-            and weight_a > 0
-            and not self.signal.get("_daily_stop_triggered", False)
-        )
-
-        if is_buying:
-            return GuardResult(blocked=True, reason=gap.reason)
-
-        logger.warning(
-            f"Gap guard triggered ({gap.gap_pct*100:+.1f}%) but "
-            f"action={action} — SELL orders proceed"
-        )
         return GuardResult(blocked=False)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
     def _compute_blended_target_pct(self) -> float:
-        """Blended TQQQ allocation = Σ(weight_i × max_position_i)."""
-        weight_a  = float(self.signal.get("weight_a", 0.75))
-        weight_b  = float(self.signal.get("weight_b", 0.25))
-        max_pos_a = STRATEGY_A_CONFIG["max_position_pct"]
-        max_pos_b = STRATEGY_B_CONFIG["max_position_pct"]
-        return weight_a * max_pos_a + weight_b * max_pos_b
+        """
+        Blended TQQQ allocation for the sanity check. Delegates to the
+        reconciler's logic (exposure state when present, max-position caps
+        as fallback) so the two paths can never disagree.
+        """
+        from .position_reconciler import PositionReconciler
+        return PositionReconciler.compute_blended_target_pct(self.signal)

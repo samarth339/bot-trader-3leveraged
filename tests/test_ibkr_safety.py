@@ -460,7 +460,8 @@ class TestSafetyGuard:
 
     # ── Guard 6: Trade frequency ────────────────────────────────────────────
 
-    def test_guard6_blocks_at_100_trades(self, mock_account, bull_signal):
+    def test_guard6_buy_blocks_at_100_trades(self, mock_account, bull_signal):
+        """100 trades YTD blocks BUYs only — risk-reducing sells still pass."""
         from ibkr import state as state_module
         from ibkr.safety_guard import SafetyGuard
 
@@ -470,7 +471,8 @@ class TestSafetyGuard:
 
         guard  = SafetyGuard(account_state=mock_account, signal=bull_signal.copy())
         result = guard._check_trade_frequency()
-        assert result.blocked, "100 trades YTD should block (leveraged ETF decay rule)"
+        assert not result.blocked, "frequency cap must NOT hard-block (sells must pass)"
+        assert guard.buy_block_reasons, "100 trades YTD must record a BUY block"
 
     def test_guard6_passes_at_50_trades(self, mock_account, bull_signal):
         from ibkr import state as state_module
@@ -521,8 +523,8 @@ class TestSafetyGuard:
 
     # ── Guard 9: VIX extreme ────────────────────────────────────────────────
 
-    def test_guard9_blocks_buy_on_vix_45(self, mock_account, bull_signal):
-        """Live VIX >= 45 should block BUY orders."""
+    def test_guard9_buy_blocks_on_vix_45(self, mock_account, bull_signal):
+        """Live VIX >= 45 records a BUY block (applied to BUY plans only)."""
         from ibkr.safety_guard import SafetyGuard
         import pandas as pd
 
@@ -532,24 +534,11 @@ class TestSafetyGuard:
             guard  = SafetyGuard(account_state=mock_account, signal=signal)
             result = guard._check_vix_extreme()
 
-        assert result.blocked, "VIX=45.5 should block BUY orders"
+        assert not result.blocked, "VIX extreme must NOT hard-block (sells must pass)"
+        assert guard.buy_block_reasons, "VIX=45.5 must record a BUY block"
 
-    def test_guard9_does_not_block_sell_on_vix_45(self, mock_account, bull_signal):
-        """Live VIX >= 45 should NOT block SELL/exit orders."""
-        from ibkr.safety_guard import SafetyGuard
-        import pandas as pd
-
-        mock_vix = pd.DataFrame({"Close": [45.5]})
-        with patch("ibkr.safety_guard.yf.download", return_value=mock_vix):
-            signal = {**bull_signal, "action": "REDUCE_A",
-                      "_daily_stop_triggered": True}
-            guard  = SafetyGuard(account_state=mock_account, signal=signal)
-            result = guard._check_vix_extreme()
-
-        assert not result.blocked, "VIX extreme guard must NOT block SELL orders"
-
-    def test_guard9_passes_on_normal_vix(self, mock_account, bull_signal):
-        """Normal VIX (< 45) must not block anything."""
+    def test_guard9_no_buyblock_on_normal_vix(self, mock_account, bull_signal):
+        """Normal VIX (< 45) records no buy block."""
         from ibkr.safety_guard import SafetyGuard
         import pandas as pd
 
@@ -559,6 +548,7 @@ class TestSafetyGuard:
             result = guard._check_vix_extreme()
 
         assert not result.blocked, "Normal VIX should not block"
+        assert not guard.buy_block_reasons
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -592,14 +582,14 @@ class TestPositionReconciler:
             f"Blended target {pct:.4f} != expected {expected:.4f}"
         )
 
-    def test_daily_stop_forces_zero_target(self, mock_account, bull_signal):
-        """_daily_stop_triggered flag must override target to 0% (full exit)."""
+    def test_force_flatten_forces_zero_target(self, mock_account, bull_signal):
+        """_force_flatten flag (kill switch / DD halt) overrides target to 0%."""
         from ibkr.position_reconciler import PositionReconciler
 
         r = PositionReconciler(mock_account)
-        signal = {**bull_signal, "_daily_stop_triggered": True}
+        signal = {**bull_signal, "_force_flatten": True}
         pct = r.compute_blended_target_pct(signal)
-        assert pct == 0.0, "Daily stop must force target allocation to 0"
+        assert pct == 0.0, "Force-flatten must force target allocation to 0"
 
     def test_target_shares_math_correct(self, mock_account, bull_signal):
         """
@@ -937,21 +927,20 @@ class TestGapGuardInSafetyGuard:
         from ibkr.safety_guard import GuardResult
         return GuardResult(blocked=False)
 
-    def test_gap_guard_blocks_buy_on_large_gap(
+    def test_gap_guard_records_buyblock_on_large_gap(
         self, tmp_path, monkeypatch, mock_account, bull_signal
     ):
-        """Guard 10 must block a HOLD/BUY signal when TQQQ gapped down >5%."""
+        """A gap-down day records a BUY block (never hard-blocks the chain)."""
         from ibkr.gap_guard import GapGuardResult
         from ibkr.safety_guard import SafetyGuard
 
         guard = self._make_guard(mock_account, bull_signal, tmp_path, monkeypatch)
 
-        # Stub out guards 4, 5, 7, 9 which make real external calls or check
-        # live time/prices — we only want to exercise guard 10 here.
+        # Stub guards that make real external calls — exercise gap guard only.
         passthrough = self._passthrough
         with patch.object(SafetyGuard, "_check_market_hours",    passthrough), \
              patch.object(SafetyGuard, "_check_portfolio_drawdown", passthrough), \
-             patch.object(SafetyGuard, "_check_daily_loss",      passthrough), \
+             patch.object(SafetyGuard, "_check_crash_day",      passthrough), \
              patch.object(SafetyGuard, "_check_vix_extreme",     passthrough), \
              patch("ibkr.safety_guard.GapGuard") as mock_gg_cls:
 
@@ -964,13 +953,13 @@ class TestGapGuardInSafetyGuard:
 
             result = guard.run_all_checks()
 
-        assert result.blocked
-        assert "BUY orders blocked" in result.reason
+        assert not result.blocked, "gap guard must not hard-block (sells must pass)"
+        assert any("BUY orders blocked" in r for r in guard.buy_block_reasons)
 
     def test_gap_guard_allows_sell_on_large_gap(
         self, tmp_path, monkeypatch, mock_account, bull_signal
     ):
-        """Guard 10 must NOT block SELL/REDUCE actions on a gap-down day."""
+        """A gap-down day must NOT block the chain — SELL plans still proceed."""
         from ibkr.gap_guard import GapGuardResult
         from ibkr.safety_guard import SafetyGuard
 
@@ -980,7 +969,7 @@ class TestGapGuardInSafetyGuard:
         passthrough = self._passthrough
         with patch.object(SafetyGuard, "_check_market_hours",    passthrough), \
              patch.object(SafetyGuard, "_check_portfolio_drawdown", passthrough), \
-             patch.object(SafetyGuard, "_check_daily_loss",      passthrough), \
+             patch.object(SafetyGuard, "_check_crash_day",      passthrough), \
              patch.object(SafetyGuard, "_check_vix_extreme",     passthrough), \
              patch("ibkr.safety_guard.GapGuard") as mock_gg_cls:
 

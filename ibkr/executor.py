@@ -8,11 +8,13 @@ Execution sequence (runs daily at 15:45 EST):
   2.  Connect to IB Gateway (with exponential backoff)
   3.  Fetch account state (NLV, positions, buying power)
   4.  Run all 10 safety guards
-        Guard 10 (gap_guard): blocks BUY if TQQQ opened down >5%
+        Guards 1/5 (kill switch / DD halt): flatten position, then freeze buys
+        Guards 6/7/9/10: collected as buy-only blocks (applied in step 5b)
   5.  Compute rebalancing plan (target allocation → delta shares)
-        VIX scaling applied inside compute_blended_target_pct():
-          VIX 5d > 40 → hard cap at 10%
-          VIX 5d > 30 → scale ×0.60
+        Target = weight_a×exposure_a + weight_b×exposure_b from the replayed
+        per-strategy state in the signal row (falls back to max-position caps
+        with a loud error if the exposure fields are missing)
+  5b. Block the order if it is a BUY and any buy-only guard fired
   6.  Adjust for buying power limits (BUY orders only)
   7.  Submit MOC order (or limit-close if past 15:50)
   8.  Update persistent state (ibkr_state.json)
@@ -56,8 +58,15 @@ logger = logging.getLogger("ibkr.executor")
 
 def run(paper: bool = True, dry_run: bool = False) -> bool:
     """
-    Full execution flow. Returns True on success / clean no-action,
-    False if blocked, failed, or errored.
+    Full execution flow.
+
+    Returns True for any cleanly-handled outcome — a submitted order, a
+    no-action day, a guard hard-block (kill switch / DD halt), or a buy-block
+    (gap/crash/VIX/frequency). The workflow stays green: the automation worked.
+
+    Returns False ONLY on a genuine operational error (signal unreadable,
+    Gateway unreachable, account fetch failed, order error) so a red workflow
+    means a human needs to investigate.
 
     Args:
         paper:   True = IB Gateway paper port (4002), False = live port (4001)
@@ -147,7 +156,7 @@ def run(paper: bool = True, dry_run: bool = False) -> bool:
                     f"Signal: {signal.get('regime', '?')} / {signal.get('action', '?')}"
                 ),
             )
-            return False
+            return True   # handled cleanly — a guard halt is not a process failure
 
         # ── Step 5: Compute rebalancing plan ───────────────────────────────────
         exec_state  = state_module.load()
@@ -155,6 +164,24 @@ def run(paper: bool = True, dry_run: bool = False) -> bool:
 
         reconciler = PositionReconciler(account_state=account)
         plan       = reconciler.compute_plan(signal, stagger_day=stagger_day)
+
+        # ── Step 5b: Buy-only guards (crash day, gap, VIX extreme, freq cap) ──
+        # Applied to the PLAN direction, not action heuristics — SELL orders
+        # (risk reduction) always proceed.
+        if plan.proceed and plan.delta_shares > 0 and guard.buy_block_reasons:
+            block_reason = " | ".join(guard.buy_block_reasons)
+            logger.warning(f"BUY plan blocked: {block_reason}")
+            _send_alert(
+                subject=f"[{env}] IBKR BUY BLOCKED — {block_reason[:50]}",
+                body=(
+                    f"Computed plan was a BUY of {plan.delta_shares} TQQQ, "
+                    f"blocked by buy-only guard(s):\n\n{block_reason}\n\n"
+                    f"Account NLV: ${account.net_liquidation:,.2f}\n"
+                    f"Signal: {signal.get('regime', '?')} / {signal.get('action', '?')}\n"
+                    "No order was submitted; strategy state re-evaluates tomorrow."
+                ),
+            )
+            return True   # handled cleanly — a buy-block is the system working
 
         # ── Step 6: Buying power check (BUY orders only) ───────────────────────
         if plan.delta_shares > 0:

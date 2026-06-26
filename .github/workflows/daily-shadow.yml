@@ -6,7 +6,9 @@ name: Daily Shadow Run  [ARCHIVED — Phase 3 complete 2026-05-29]
 #   .github/workflows/paper-trade.yml   (Phase 4 paper execution, 4:00 PM ET)
 # Schedule removed; workflow kept for audit history.
 on:
-  workflow_dispatch:   # manual-only (schedule removed)
+  # Manual-only (schedule removed — Phase 3 archived). A single workflow_dispatch
+  # key: the previous file duplicated it, which is invalid YAML and made GitHub
+  # fail this workflow on every push (a no-log "invalid workflow file" run).
   workflow_dispatch:
     inputs:
       force_run:

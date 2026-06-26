@@ -44,8 +44,11 @@ def _load_env():
 
 _load_env()
 
-GMAIL_USER     = os.environ.get("GMAIL_USER", "samarth339@gmail.com")
-GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+GMAIL_USER     = os.environ.get("GMAIL_USER", "samarth339@gmail.com").strip()
+# Gmail shows app passwords as "xxxx xxxx xxxx xxxx" — accept that form by
+# stripping the spaces a copy-paste leaves behind, plus any trailing newline a
+# GitHub secret / .env line can carry. Both are common silent auth failures.
+GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "").strip().replace(" ", "")
 SMTP_HOST      = "smtp.gmail.com"
 SMTP_PORT      = 465   # SSL
 
@@ -77,9 +80,18 @@ def send_email(subject: str, body: str, to: str = None) -> bool:
         log.info(f"Email sent: {subject}")
         return True
     except smtplib.SMTPAuthenticationError:
+        # Show enough to diagnose WITHOUT leaking the secret: the account in use
+        # and the length of the credential (a valid Gmail app password is 16
+        # chars after spaces are stripped). Wrong length ⇒ secret is malformed;
+        # right length but still failing ⇒ revoked/expired ⇒ regenerate it.
         log.error(
-            "Gmail authentication failed. "
-            "Check GMAIL_APP_PASSWORD in .env — must be a Gmail App Password, not your account password."
+            "Gmail authentication failed (SMTPAuthenticationError). "
+            f"Account='{GMAIL_USER}', app-password length={len(GMAIL_PASSWORD)} "
+            "(expected 16). Must be a Gmail App Password, not the account password. "
+            "Local: set GMAIL_USER / GMAIL_APP_PASSWORD in .env. "
+            "CI: update the GMAIL_USER / GMAIL_APP_PASSWORD GitHub Actions secrets. "
+            "If length is 16 and it still fails, the password was revoked — "
+            "regenerate at https://myaccount.google.com/apppasswords"
         )
         return False
     except Exception as e:

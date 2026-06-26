@@ -27,6 +27,7 @@ import pytest
 #  1. Exposure replay
 # ══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.real_data
 class TestExposureReplay:
     def test_exposures_present_and_bounded(self):
         from backtester.exposure_replay import compute_exposures
@@ -190,6 +191,7 @@ class TestPaperCrashDay:
     def test_crash_day_records_buyblock(self, tmp_path, monkeypatch):
         import paper_trade
         monkeypatch.setattr(paper_trade, "KILL_SWITCH_PATH", tmp_path / "kill.flag")
+        monkeypatch.setattr(paper_trade, "fetch_close", lambda t: 15.0)  # no network
         sig = {"weight_a": 0.9, "weight_b": 0.1, "action": "HOLD"}
         guard = paper_trade.PaperSafetyGuard(sig, self._portfolio(),
                                              tqqq_closes=[100.0, 90.0])  # −10%

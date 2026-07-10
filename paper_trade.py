@@ -1175,7 +1175,21 @@ def main():
                         help="Print current portfolio state and exit")
     parser.add_argument("--reset",            action="store_true",
                         help="Clear today's execution flag (use after failed run recovery)")
+    parser.add_argument("--test-email",       action="store_true",
+                        help="Send one test email via send_email and exit — diagnostic "
+                             "for the GMAIL_USER / GMAIL_APP_PASSWORD secrets. No state change.")
     args = parser.parse_args()
+
+    if args.test_email:
+        import send_email
+        ok = send_email.send_email(
+            subject="[PAPER] Gmail alert test — bot email check",
+            body=("If you can read this, GMAIL_APP_PASSWORD is a valid Gmail App "
+                  "Password and daily paper-trade alerts will be delivered.\n\n"
+                  "Sent by: python3 paper_trade.py --test-email"),
+        )
+        print("EMAIL TEST RESULT:", "SENT ✓" if ok else "FAILED ✗ (see the ERROR log line above)")
+        sys.exit(0 if ok else 1)
 
     if args.demo:
         run_demo()

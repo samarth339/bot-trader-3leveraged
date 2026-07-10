@@ -5,8 +5,13 @@
 
 ## What This Project Is
 A systematic trading bot trading **TQQQ** (3x long NASDAQ) and **SQQQ** (3x short NASDAQ),
-using **QQQ** as the clean signal source. Currently in **Phase 4 paper trading** (IB Gateway
-paper account DUP540674, MOC orders daily at 3:45 PM ET). Goal: $775K+ from $5K seed over ~10 years.
+using **QQQ** as the clean signal source. Currently in **Phase 4 paper trading, which is a
+SIMULATION** — `paper_trade.py` runs on GitHub Actions, prices come from yfinance, and all
+state lives in git-committed JSON (`logs/paper_portfolio.json`). **It does NOT connect to
+IBKR** — no IB Gateway, no credentials, no orders. The real IBKR paper account (`DUP540674`)
+is untouched by the bot and only becomes relevant in **Phase 5** (`ibkr/executor.py`, not yet
+active). Goal: $775K+ from $5K seed over ~10 years. **Real money is not yet at risk; treat
+every step toward it (Phase 5, live trading) as requiring explicit human authorization.**
 
 ---
 
@@ -25,6 +30,61 @@ paper account DUP540674, MOC orders daily at 3:45 PM ET). Goal: $775K+ from $5K 
 
 4. **Shadow mode = no trades.** `shadow_mode.py` and `daily_signal.py --shadow`
    log signals only. Do not add execution code without explicit approval.
+
+---
+
+## Integrity Guardrails — Non-Negotiable (real money will be at stake)
+
+These govern how the bot is developed and how results are reported. They exist
+because a trading system that lies to its owner — even by omission or optimism —
+loses real capital. Violating any of these is a defect, not a style choice.
+
+1. **No fabricated data, ever.** Never invent or estimate prices, fills, VIX,
+   metrics, or backtest results. If data is missing or a fetch fails, STOP and
+   say so — do not synthesize plausible-looking numbers. The synthetic pre-2010
+   3x proxy is the ONLY sanctioned synthetic data and must always be labeled
+   "synthetic" wherever it appears.
+
+2. **Never hack the result to look good.** No cherry-picking date windows, no
+   tuning parameters until a metric crosses a target, no dropping "inconvenient"
+   trades or data points, no quietly loosening slippage/fees/assumptions to
+   flatter a number, no disabling a failing test to go green. If a change makes
+   performance worse, report it worse. A worse-but-honest result beats a
+   better-looking rigged one.
+
+3. **Every number is traceable.** Any performance figure, metric, or claim must
+   cite the file or command that produced it (e.g. `logs/paper_trades.csv`, a
+   named backtest run). No numbers from memory or "about." If it can't be
+   reproduced, it can't be stated.
+
+4. **Always label simulation vs. real.** State explicitly whether a result is a
+   backtest, the paper simulation (`paper_trade.py`), or a real broker account.
+   Never imply the bot is doing something it isn't (e.g. "trading on IBKR").
+   Keep docs in sync with code — stale docs that overclaim are fake data.
+
+5. **Report failures honestly and verify before "done".** Failed runs, blocked
+   guards, and failing tests are reported with their raw output. "Done" requires
+   having run the actual command/test and shown the result — never assert
+   success from expectation.
+
+6. **Backtest ≠ expected live return.** Never present optimized or in-sample
+   numbers as what live trading will earn. Always carry the honest caveats:
+   T-1 timing, slippage, and out-of-sample degradation. In-sample tuning results
+   are labeled in-sample. The OOS Calmar 0.31 caveat is not to be buried.
+
+7. **Fail safe, never fail open.** When data is missing/stale or any component
+   errors, the system must reduce risk (block buys, or flatten if holding) —
+   never assume a value and trade anyway. Guards default to protecting capital.
+   (See the exposure-fallback ERROR log and the flatten-then-freeze halt.)
+
+8. **Preserve the audit trail.** Never rewrite committed git history or edit
+   `logs/` to make past results look better. Corrections go forward, with an
+   explanation of what was wrong.
+
+9. **Money-moving actions require explicit human authorization.** Enabling
+   Phase 5, connecting to a funded or paper broker account, or placing any real
+   order is never done silently or on assumption — only on a clear, current
+   instruction from the owner.
 
 ---
 
@@ -182,10 +242,11 @@ python3 stress_test_robustness.py --no-chart
 | Config locked | ✅ config/strategy_config.py is immutable baseline (score 0.6564) |
 | **Phase 3: Shadow Mode** | ✅ **COMPLETE** — 42 days observed (exceeded 30-day target) |
 | Shadow regime summary | 10 days high_vol → 5 days uncertain → 27 days bull (Apr–May 2026) |
-| **Phase 4: Paper Trading** | 🔄 **ACTIVE** — as of 2026-05-29 |
-| Paper account | DUP540674 · NLV $5,877 (seed capital, fully in cash) |
-| Scheduled tasks | ✅ 3 tasks enabled (signal 3:30 PM, execute 3:45 PM, weekly tests 9 AM Mon) |
-| **Next action** | Monitor paper fills, slippage, and guard behaviour → authorize Phase 5 after ~30 days |
+| **Phase 4: Paper Trading (SIMULATION)** | 🔄 **ACTIVE** — GitHub Actions, `paper_trade.py`, NOT connected to IBKR |
+| Sim account | `logs/paper_portfolio.json` · reset to $10,000 on 2026-07-10 (fresh start, fixes live) |
+| Real IBKR paper acct | `DUP540674` — untouched by the bot; only used in Phase 5 (`ibkr/executor.py`) |
+| Scheduled tasks | GitHub Actions: daily-signal (~3:30 PM ET), paper-trade (~4:00 PM ET), CI (weekly) |
+| **Next action** | Observe fixed system in the simulation through a real volatility event before scoping Phase 5 |
 
 ---
 

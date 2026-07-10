@@ -62,11 +62,11 @@ Every weekday at 4:00 PM ET (GitHub Actions, after market close):
 
 | | |
 |---|---|
-| Tests | ✅ 432 passing, 1 skipped |
+| Tests | ✅ 458 passing, 1 skipped |
 | Phase 3 shadow mode | ✅ Complete — 42 days observed |
-| Phase 4 paper trading | 🔄 Active — $10,000 seed capital |
-| Paper account | DUP540674 · NLV tracked in `logs/paper_portfolio.json` |
-| Last signal | BULL · 90/10 allocation · QQQ +14.98% above SMA-130 |
+| Phase 4 paper trading | 🔄 Active — **SIMULATION only** (`paper_trade.py` on GitHub Actions, NOT connected to IBKR) |
+| Sim account | $10,000 seed · state in `logs/paper_portfolio.json` · reset 2026-07-10 |
+| Real IBKR paper acct | `DUP540674` — untouched by the bot (Phase 5 / `ibkr/executor.py` only) |
 
 ---
 

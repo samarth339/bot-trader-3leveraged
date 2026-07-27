@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import dcc, html, Input, Output
+from dash import dcc, html, Input, Output, ctx, no_update
 
 from dashboard.data_loader import load
 from dashboard.components import (
@@ -100,19 +100,41 @@ def _dashboard_body() -> html.Div:
     ], className="dash-page")
 
 
+from dashboard import admin
+
+
 def _layout() -> html.Div:
     return html.Div([
         dcc.Interval(id="refresh", interval=REFRESH_SECONDS * 1000, n_intervals=0),
-        html.Div(_dashboard_body(), id="dash-body"),
+        dcc.Tabs(id="tabs", value="monitor", className="top-tabs", children=[
+            dcc.Tab(label="📊  Monitor", value="monitor", className="top-tab",
+                    selected_className="top-tab-sel"),
+            dcc.Tab(label="⚙  Admin", value="admin", className="top-tab",
+                    selected_className="top-tab-sel"),
+        ]),
+        html.Div(_dashboard_body(), id="page"),
     ])
 
 
 app.layout = _layout
 
 
-@app.callback(Output("dash-body", "children"), Input("refresh", "n_intervals"))
-def _refresh(_n):
+@app.callback(
+    Output("page", "children"),
+    Input("tabs", "value"),
+    Input("refresh", "n_intervals"),
+)
+def _render_page(tab, _n):
+    # Auto-refresh only re-renders the Monitor; the Admin page is static (forms).
+    if tab == "admin":
+        # don't rebuild admin on the 60s interval (would wipe in-progress edits)
+        if ctx.triggered_id == "refresh":
+            return no_update
+        return admin.layout()
     return _dashboard_body()
+
+
+admin.register_callbacks(app)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

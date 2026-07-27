@@ -99,6 +99,21 @@ VOL_TARGET_CONFIG = {
     "cap":               1.0,     # max scalar (never lever ABOVE the blended target)
 }
 
+# ── Apply validated runtime overrides (Admin Panel) ────────────────────────
+# The baseline above stays in code and is never mutated on disk. Any overrides
+# saved via the Admin Panel (config/overrides.json, whitelisted + bounded) are
+# merged into the dicts here — BEFORE PORTFOLIO_DEFAULTS is built — so they take
+# effect everywhere. Delete overrides.json (or use the panel's reset) to restore
+# the locked baseline exactly. Applied changes are logged to logs/config_audit.log.
+try:
+    import sys as _sys
+    from config.overrides import apply_overrides as _apply_overrides
+    _apply_overrides(_sys.modules[__name__])
+except Exception as _ovr_exc:   # never let overrides break config import
+    import logging as _logging
+    _logging.getLogger("config.strategy_config").error(
+        f"Config override application skipped: {_ovr_exc}")
+
 # ── Convenience: flattened dict for DualPortfolioBacktester constructor ────
 PORTFOLIO_DEFAULTS = dict(
     ma_window    = REGIME_CONFIG["ma_window"],

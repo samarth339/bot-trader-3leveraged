@@ -419,3 +419,30 @@ hr.section-divider {
 .log-text { color:#8b949e; overflow:hidden; text-overflow:ellipsis; }
 
 .stat-note { color:#d29922; font-size:11px; margin-top:8px; line-height:1.4; }
+
+/* ── Phase B: admin panel + tabs ─────────────────────────────────────────── */
+.top-tabs { margin-bottom:16px; border-bottom:1px solid #21262d; }
+.top-tab { background:transparent !important; border:none !important; color:#8b949e !important;
+  padding:10px 20px !important; font-size:13px !important; }
+.top-tab-sel { color:#e6edf3 !important; border-bottom:2px solid #388bfd !important;
+  background:transparent !important; }
+.admin-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+.admin-grid { display:flex; flex-direction:column; gap:8px; }
+.admin-field { display:flex; align-items:center; gap:10px; }
+.admin-label { color:#c9d1d9; font-size:12.5px; flex:1 1 140px; }
+.admin-input { background:#0d1117; border:1px solid #30363d; border-radius:5px;
+  color:#e6edf3; padding:5px 8px; width:90px; font-size:12.5px; }
+.admin-input:focus { border-color:#388bfd; outline:none; }
+.admin-bound { color:#6e7681; font-size:10.5px; min-width:64px; }
+.btn-row { display:flex; gap:10px; flex-wrap:wrap; margin:6px 0; }
+.btn { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px;
+  padding:8px 14px; font-size:12.5px; cursor:pointer; font-weight:600; }
+.btn:hover { border-color:#8b949e; }
+.btn-green { background:#238636; border-color:#2ea043; color:#fff; }
+.btn-red { background:#da3633; border-color:#f85149; color:#fff; }
+.btn-amber { background:#9e6a03; border-color:#d29922; color:#fff; }
+.btn-blue { background:#1f6feb; border-color:#388bfd; color:#fff; }
+.admin-msg, .admin-out { margin-top:10px; font-size:12.5px; }
+.admin-msg .ok { color:#3fb950; } .admin-msg .err { color:#f85149; }
+.admin-pre { background:#0d1117; border-radius:6px; padding:10px; font-size:11px;
+  color:#8b949e; overflow-x:auto; max-height:280px; }

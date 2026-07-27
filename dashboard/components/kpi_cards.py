@@ -28,42 +28,27 @@ def _regime_label(regime: str) -> str:
 
 
 def build(d: DashboardData) -> html.Div:
-    regime = d.current_signal.get("regime", "—")
-    action = d.current_signal.get("action", "—")
+    """Headline KPI strip — the REAL paper-SIMULATION account (paper_portfolio.json).
+    Fixes the prior bug where this read stale ibkr_state.json at the $5K seed."""
+    p = d.paper or {}
+    seed  = p.get("seed", 10_000.0)
+    nlv   = p.get("nlv", seed)
+    tot   = p.get("total_return", 0.0)
+    tpl   = p.get("total_pl", 0.0)
+    upl   = p.get("unrealized_pl", 0.0)
+    rpl   = p.get("realized_pl", 0.0)
+    maxdd = p.get("max_dd", 0.0)
 
     cards = [
-        _card(
-            "Portfolio Value",
-            f"${d.portfolio_value:,.0f}",
-            f"Seed $5,000  ·  shadow start",
-            ""
-        ),
-        _card(
-            "Total Return",
-            _fmt_pct(d.total_return_pct),
-            "Since shadow start (2026-03-27)",
-            _pct_class(d.total_return_pct),
-        ),
-        _card(
-            "Max Drawdown",
-            _fmt_pct(d.max_dd_pct),
-            "Shadow window peak-to-trough",
-            "negative" if d.max_dd_pct < -0.01 else "",
-        ),
-        _card(
-            "Sharpe (30d)",
-            f"{d.sharpe_30:.2f}",
-            "Annualised, ex-ante 5% RF",
-            "positive" if d.sharpe_30 > 0 else "negative",
-        ),
-        _card(
-            "Regime · Action",
-            _regime_label(regime),
-            action,
-            _regime_class(regime),
-        ),
+        _card("Account NLV", f"${nlv:,.2f}", f"seed ${seed:,.0f} · sim", ""),
+        _card("Total P/L", f"{'+' if tpl>0 else ''}${tpl:,.2f}", _fmt_pct(tot), _pct_class(tpl)),
+        _card("Unrealized P/L", f"{'+' if upl>0 else ''}${upl:,.2f}",
+              f"{p.get('shares',0)} sh @ ${p.get('avg_cost',0):.2f}", _pct_class(upl)),
+        _card("Realized P/L", f"{'+' if rpl>0 else ''}${rpl:,.2f}",
+              f"{p.get('n_closes',0)} closed trades", _pct_class(rpl)),
+        _card("Max Drawdown", _fmt_pct(-maxdd),
+              "peak-to-trough (sim)", "negative" if maxdd > 0.01 else ""),
     ]
-
     return html.Div(cards, className="kpi-row")
 
 

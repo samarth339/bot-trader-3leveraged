@@ -53,14 +53,22 @@ def _base_layout(title: str) -> dict:
 
 
 def _add_regime_shading(fig: go.Figure, regime_blocks: list, y_ref: str = "y") -> None:
-    for start, end, regime in regime_blocks:
-        _, fill = _REGIME_COLORS.get(regime, (_TEXT, "rgba(255,255,255,0.04)"))
-        fig.add_vrect(
-            x0=start, x1=end,
-            fillcolor=fill,
-            layer="below",
-            line_width=0,
+    """Batch all regime rectangles into ONE layout update.
+
+    Building them with fig.add_vrect() in a loop is O(n²) (each call rebuilds the
+    whole layout) — with ~689 blocks that was ~45s PER chart. Setting the full
+    `shapes` list once is effectively instant.
+    """
+    shapes = [
+        dict(
+            type="rect", xref="x", yref="y domain",
+            x0=start, x1=end, y0=0, y1=1,
+            fillcolor=_REGIME_COLORS.get(regime, (_TEXT, "rgba(255,255,255,0.04)"))[1],
+            line=dict(width=0), layer="below",
         )
+        for start, end, regime in regime_blocks
+    ]
+    fig.update_layout(shapes=shapes)
 
 
 def build_equity_chart(d: DashboardData) -> dcc.Graph:

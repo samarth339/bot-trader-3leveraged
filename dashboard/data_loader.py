@@ -90,11 +90,47 @@ class DashboardData:
     regime_days:      dict  = field(default_factory=dict)   # {bull:N, uncertain:N, high_vol:N}
     current_alloc:    float = 0.85   # blended TQQQ target pct
 
+    # Real paper-SIMULATION account (from paper_portfolio.json / paper_trades.csv)
+    paper:         dict = field(default_factory=dict)
+    system_health: dict = field(default_factory=dict)
+    recent_logs:   list = field(default_factory=list)
 
-# ── Public entry point ─────────────────────────────────────────────────────────
 
-def load() -> DashboardData:
-    """Load and compute all dashboard data. Call once at app startup."""
+# ── Public entry point (mtime-cached) ────────────────────────────────────────
+
+# The 16-year backtest is expensive; recompute only when an input file changes.
+# Keyed on the mtimes of the files that affect output, so the 60s auto-refresh
+# is instant unless the pipeline actually committed new data.
+_CACHE: dict = {"key": None, "data": None}
+
+_CACHE_FILES = [
+    LOGS / "signal_history.csv",
+    LOGS / "paper_portfolio.json",
+    LOGS / "paper_trades.csv",
+    LOGS / "ibkr_kill.flag",
+    DATA / "QQQ_full.csv",
+]
+
+
+def _cache_key() -> tuple:
+    return tuple(f.stat().st_mtime if f.exists() else 0.0 for f in _CACHE_FILES)
+
+
+def load(force: bool = False) -> DashboardData:
+    """Load dashboard data, reusing the cached result while inputs are unchanged."""
+    key = _cache_key()
+    if not force and _CACHE["key"] == key and _CACHE["data"] is not None:
+        return _CACHE["data"]
+    data = _load_uncached()
+    _CACHE["key"], _CACHE["data"] = key, data
+    return data
+
+
+def _load_uncached() -> DashboardData:
+    """Load and compute all dashboard data (uncached)."""
+    # Silence the backtester's per-flip reconciliation warnings in the dashboard.
+    import logging
+    logging.getLogger("backtester.dual_portfolio").setLevel(logging.ERROR)
 
     # ── Price data ─────────────────────────────────────────────────────────────
     tqqq = pd.read_csv(DATA / "TQQQ_full.csv", index_col=0, parse_dates=True)
@@ -133,9 +169,15 @@ def load() -> DashboardData:
     rs7       = _rolling_sharpe(daily_ret, 7)
     rs30      = _rolling_sharpe(daily_ret, 30)
 
-    # ── Paper trading ──────────────────────────────────────────────────────────
-    paper_state  = _load_json(LOGS / "ibkr_state.json")
-    paper_equity = _build_paper_equity(tqqq_close, paper_state)
+    # ── Paper trading (REAL simulation account — correct files) ───────────────
+    from dashboard.paper_data import load_paper_account
+    from dashboard.system_health import check_health, tail_logs
+    cur_price     = float(tqqq_close.iloc[-1]) if len(tqqq_close) else None
+    paper_account = load_paper_account(LOGS, cur_price)
+    paper_equity  = paper_account.get("equity") if len(paper_account.get("equity", [])) else None
+    paper_state   = {}   # legacy field retained for existing callers
+    system_health = check_health(ROOT)
+    recent_logs   = tail_logs(ROOT, n=40)
 
     # ── Scalar summary (shadow window) ────────────────────────────────────────
     shadow_value      = float(sh_equity.iloc[-1]) if not sh_equity.empty else SEED_CAPITAL
@@ -194,6 +236,9 @@ def load() -> DashboardData:
         ytd_return         = ytd,
         regime_days        = regime_days,
         current_alloc      = alloc,
+        paper              = paper_account,
+        system_health      = system_health,
+        recent_logs        = recent_logs,
     )
 
 

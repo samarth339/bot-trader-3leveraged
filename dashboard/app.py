@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import html
+from dash import dcc, html, Input, Output
 
 from dashboard.data_loader import load
 from dashboard.components import (
@@ -23,9 +23,12 @@ from dashboard.components import (
     equity_chart,
     historical,
     kpi_cards,
+    paper_panel,
     risk_panel,
     signal_panel,
 )
+
+REFRESH_SECONDS = 60   # auto-refresh cadence
 
 # ── Build app ─────────────────────────────────────────────────────────────────
 
@@ -38,37 +41,49 @@ app = dash.Dash(
 )
 
 
-def _layout() -> html.Div:
-    """Build full layout from a fresh data load."""
-    d = load()
+_FLEX = {"display": "flex", "gap": "16px", "marginBottom": "16px", "alignItems": "flex-start"}
 
+
+def _dashboard_body() -> html.Div:
+    """Build the full dashboard body from a fresh data load (called on refresh)."""
+    d = load()
     last_date = str(d.current_signal.get("as_of_date", ""))[:10]
-    phase_label = "Phase 4 — Paper Trading" if d.paper_equity is not None else "Phase 3 — Shadow Mode"
 
     header = html.Div([
         html.Div([
             html.Div("TQQQ / SQQQ Trading Bot", className="header-title"),
-            html.Div(phase_label, className="header-subtitle"),
+            html.Div("Phase 4 — Paper Trading (simulation)", className="header-subtitle"),
         ]),
         html.Div([
             html.Div(f"Signal date: {last_date}", style={"marginBottom": "2px"}),
-            html.Div("Static snapshot — reload to refresh", style={"color": "#484f58"}),
+            html.Div(f"Auto-refresh every {REFRESH_SECONDS}s", style={"color": "#484f58"}),
         ], className="header-meta"),
     ], className="header-bar")
 
-    # ── Row 1: KPI strip ──────────────────────────────────────────────────────
-    kpi_row = kpi_cards.build(d)
+    # ── Live monitoring (REAL simulation account) ─────────────────────────────
+    status_banner = paper_panel.build_status(d)
+    kpi_row       = kpi_cards.build(d)          # now the real paper account
 
-    # ── Row 2: Equity chart (wide) + Signal panel ─────────────────────────────
+    monitor_row1 = html.Div([
+        html.Div(paper_panel.build_positions(d), style={"flex": "2"}),
+        html.Div(paper_panel.build_perf_stats(d), style={"flex": "1", "minWidth": "0"}),
+        html.Div(paper_panel.build_health(d), style={"flex": "1.4", "minWidth": "0"}),
+    ], style=_FLEX)
+
+    monitor_row2 = html.Div([
+        html.Div(paper_panel.build_trade_history(d), style={"flex": "1.3"}),
+        html.Div(paper_panel.build_logs(d), style={"flex": "1.7", "minWidth": "0"}),
+    ], style=_FLEX)
+
+    # ── Strategy backtest & signals (clearly labelled as NOT the live account) ─
+    section_label = html.Div("Strategy Backtest & Signals  ·  (16-yr model context — not the live account)",
+                             className="section-label")
+
     row2 = html.Div([
         html.Div(equity_chart.build(d), style={"flex": "2"}),
         html.Div(signal_panel.build(d), style={"flex": "1", "minWidth": "0"}),
-    ], style={"display": "flex", "gap": "16px", "marginBottom": "16px", "alignItems": "flex-start"})
-
-    # ── Row 3: Rolling Sharpe + Return distribution ───────────────────────────
+    ], style=_FLEX)
     row3 = analytics.build(d)
-
-    # ── Row 4: Performance/VIX + Risk metrics + Allocation + Regime ──────────
     row4 = html.Div([
         html.Div(historical.build(d), style={"flex": "2"}),
         html.Div([
@@ -79,20 +94,32 @@ def _layout() -> html.Div:
     ], style={"display": "flex", "gap": "16px", "alignItems": "flex-start"})
 
     return html.Div([
-        header,
-        kpi_row,
-        row2,
-        row3,
-        row4,
+        header, status_banner, kpi_row,
+        monitor_row1, monitor_row2,
+        section_label, row2, row3, row4,
     ], className="dash-page")
 
 
+def _layout() -> html.Div:
+    return html.Div([
+        dcc.Interval(id="refresh", interval=REFRESH_SECONDS * 1000, n_intervals=0),
+        html.Div(_dashboard_body(), id="dash-body"),
+    ])
+
+
 app.layout = _layout
+
+
+@app.callback(Output("dash-body", "children"), Input("refresh", "n_intervals"))
+def _refresh(_n):
+    return _dashboard_body()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("\n  TQQQ Bot Dashboard")
-    print("  Open: http://127.0.0.1:8050\n")
+    print("  Warming data cache (first backtest run)…", flush=True)
+    load()   # pre-compute so the first browser request is instant, not a cold backtest
+    print("  Ready.  Open: http://127.0.0.1:8050\n", flush=True)
     app.run(debug=False, host="127.0.0.1", port=8050)

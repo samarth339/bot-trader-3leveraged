@@ -203,11 +203,17 @@ class PositionReconciler:
         exp_a = PositionReconciler._parse_exposure(signal, "exposure_a")
         exp_b = PositionReconciler._parse_exposure(signal, "exposure_b")
 
+        # Vol-target overlay scalar (1.0 when disabled/absent → no change)
+        vol_scalar = PositionReconciler._parse_exposure(signal, "vol_scalar")
+        if vol_scalar is None:
+            vol_scalar = 1.0
+
         if exp_a is not None and exp_b is not None:
-            blended = weight_a * exp_a + weight_b * exp_b
+            blended = (weight_a * exp_a + weight_b * exp_b) * vol_scalar
+            scal_note = f" ×{vol_scalar:.3f} vol-scalar" if vol_scalar != 1.0 else ""
             logger.info(
                 f"Blended target (exposure state): "
-                f"{weight_a:.0%}×{exp_a:.1%} + {weight_b:.0%}×{exp_b:.1%} "
+                f"{weight_a:.0%}×{exp_a:.1%} + {weight_b:.0%}×{exp_b:.1%}{scal_note} "
                 f"= {blended:.1%} of NLV in TQQQ"
             )
             return blended

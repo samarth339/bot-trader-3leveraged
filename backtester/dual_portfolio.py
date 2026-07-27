@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from backtester.engine import Backtester
-from config.strategy_config import RISK_CONFIG
+from config.strategy_config import RISK_CONFIG, VOL_TARGET_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,10 @@ class DualPortfolioBacktester:
         # Confidence-weighted range
         w_a_min: float = 0.15,
         w_a_max: float = 0.85,
+        # Volatility-targeted overlay (for honest A/B testing without touching
+        # the global config). None → follow VOL_TARGET_CONFIG["enabled"].
+        vol_target_override: bool = False,
+        vol_target_params: dict = None,
     ):
         self.tqqq            = tqqq
         self.sqqq            = sqqq
@@ -81,6 +85,8 @@ class DualPortfolioBacktester:
         self.vix_smooth      = vix_smooth
         self.w_a_min         = w_a_min
         self.w_a_max         = w_a_max
+        self.vol_target_override = vol_target_override
+        self.vol_target_params   = vol_target_params
 
         if not t1:
             logger.warning(
@@ -350,6 +356,15 @@ class DualPortfolioBacktester:
         # Pre-build signal inputs for dynamic uncertain allocation (pct_vs_sma)
         signal_close_run, signal_sma_run, _ = self._build_signal_inputs()
 
+        # Volatility-targeted exposure overlay (config-gated, T-1 safe).
+        # scalar_t multiplies the blended return — a daily-rebalanced exposure
+        # fraction: portfolio_ret = scalar_t * blended_ret_t.
+        vol_scalar = None
+        if VOL_TARGET_CONFIG.get("enabled") or self.vol_target_override:
+            from backtester.vol_target import compute_vol_scalar
+            vol_scalar = compute_vol_scalar(self.qqq, t1=self.t1,
+                                            **(self.vol_target_params or {}))
+
         ret_a = ec_a.pct_change().fillna(0)
         ret_b = ec_b.pct_change().fillna(0)
 
@@ -380,7 +395,13 @@ class DualPortfolioBacktester:
                 self._reconcile(date, prev_wa, wa, portfolio_val)
             prev_wa = wa
 
-            blended       = wa * float(ret_a.iloc[i]) + wb * float(ret_b.iloc[i])
+            blended = wa * float(ret_a.iloc[i]) + wb * float(ret_b.iloc[i])
+
+            scalar = 1.0
+            if vol_scalar is not None:
+                scalar = float(vol_scalar.get(date, 1.0))
+                blended *= scalar
+
             portfolio_val *= (1 + blended)
             rows.append({
                 "date":        date,
@@ -388,6 +409,7 @@ class DualPortfolioBacktester:
                 "regime":      regime,
                 "weight_a":    wa,
                 "weight_b":    wb,
+                "vol_scalar":  round(scalar, 4),
                 "pct_vs_sma":  round(pct_sma, 2) if not np.isnan(pct_sma) else None,
                 "ret_a":       round(float(ret_a.iloc[i]) * 100, 4),
                 "ret_b":       round(float(ret_b.iloc[i]) * 100, 4),

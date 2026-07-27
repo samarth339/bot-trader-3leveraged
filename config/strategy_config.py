@@ -78,6 +78,27 @@ RISK_CONFIG = {
     "alloc_drift_rebalance": 0.05,   # force rebalance if drift >5%
 }
 
+# ── Volatility-Targeted Exposure Overlay ───────────────────────────────────
+# Portfolio-level exposure scalar applied ON TOP of the regime/exposure system.
+# Scales the blended TQQQ target by (target_vol / realized_3x_vol), so exposure
+# falls BEFORE VIX-tier thresholds trigger when realized volatility rises, and
+# rises toward full in calm tapes. Rationale: volatility is far more
+# autocorrelated/forecastable than returns, and on a 3x product cutting
+# exposure in high-vol regimes reduces both drawdown AND decay drag.
+#
+# T-1 safe: realized vol is computed from QQQ closes shifted by 1 bar.
+# DEFAULT OFF — this is an experimental overlay, not part of the locked
+# baseline. Promote to enabled ONLY after an honest in- + out-of-sample
+# backtest shows it improves risk-adjusted return, and with owner sign-off.
+VOL_TARGET_CONFIG = {
+    "enabled":           False,   # locked baseline is unchanged while False
+    "target_annual_vol": 0.55,    # target annualized portfolio vol (55%)
+    "lookback":          20,      # trading days for realized-vol estimate
+    "leverage":          3.0,     # TQQQ ≈ 3x QQQ (realized-vol proxy multiplier)
+    "floor":             0.0,     # min exposure scalar
+    "cap":               1.0,     # max scalar (never lever ABOVE the blended target)
+}
+
 # ── Convenience: flattened dict for DualPortfolioBacktester constructor ────
 PORTFOLIO_DEFAULTS = dict(
     ma_window    = REGIME_CONFIG["ma_window"],

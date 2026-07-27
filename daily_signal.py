@@ -401,6 +401,22 @@ def main():
         logger.error(f"Exposure replay FAILED — executors will fall back to "
                      f"max-position caps: {exc}")
 
+    # ── Volatility-target overlay scalar (config-gated, default OFF) ──────────
+    # When enabled, executors multiply the blended target by this scalar so
+    # exposure scales down as realized volatility rises. When disabled the
+    # scalar is 1.0 and live behavior is unchanged.
+    vol_scalar = 1.0
+    try:
+        from config.strategy_config import VOL_TARGET_CONFIG
+        if VOL_TARGET_CONFIG.get("enabled"):
+            from backtester.vol_target import latest_scalar
+            vol_scalar = latest_scalar(qqq, as_of=sig["as_of_date"])
+            logger.info(f"Vol-target overlay ON: scalar={vol_scalar:.3f} "
+                        f"(target {VOL_TARGET_CONFIG['target_annual_vol']:.0%} ann vol)")
+    except Exception as exc:
+        logger.error(f"Vol-target scalar failed — using 1.0 (no scaling): {exc}")
+        vol_scalar = 1.0
+
     # ── Gap guard check ────────────────────────────────────────────────────────
     # Run for today's live signal (not for historical --date back-calculations,
     # since we can't reconstruct intraday open prices for past dates).
@@ -450,6 +466,7 @@ def main():
         "exposure_a":       round(exposure_a, 4) if not np.isnan(exposure_a) else "",
         "exposure_b":       round(exposure_b, 4) if not np.isnan(exposure_b) else "",
         "exposure_date":    exposure_state_date,
+        "vol_scalar":       round(vol_scalar, 4),
     }
     append_signal_log(log_row)
     logger.info(f"Signal logged: regime={sig['regime']}  "

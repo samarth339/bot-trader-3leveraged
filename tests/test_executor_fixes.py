@@ -389,6 +389,66 @@ class TestT1Anchoring:
         assert pd.Timestamp(sig["signal_date"]) < as_of
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  9. Volatility-target overlay (config-gated, default OFF)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestVolTargetOverlay:
+    def _qqq(self, vol="low", n=120):
+        import numpy as np, pandas as pd
+        idx = pd.bdate_range("2025-01-01", periods=n)
+        rng = np.random.default_rng(0)
+        # high: ~48% ann QQQ vol → 3x ~143% > 55% target → scalar < 1
+        # low:  ~6% ann QQQ vol  → 3x ~19% < 55% target → scalar capped at 1
+        daily = 0.030 if vol == "high" else 0.004
+        rets = rng.normal(0.0003, daily, n)
+        close = 100 * np.cumprod(1 + rets)
+        return pd.DataFrame({"close": close}, index=idx)
+
+    def test_scalar_in_bounds_and_deterministic(self):
+        from backtester.vol_target import compute_vol_scalar
+        q = self._qqq("low")
+        s1 = compute_vol_scalar(q, target_annual_vol=0.55)
+        s2 = compute_vol_scalar(q, target_annual_vol=0.55)
+        assert (s1 >= 0.0).all() and (s1 <= 1.0).all()
+        assert s1.equals(s2), "vol scalar must be deterministic"
+
+    def test_higher_vol_gives_lower_scalar(self):
+        from backtester.vol_target import compute_vol_scalar
+        lo = compute_vol_scalar(self._qqq("low"),  target_annual_vol=0.55).iloc[-1]
+        hi = compute_vol_scalar(self._qqq("high"), target_annual_vol=0.55).iloc[-1]
+        assert hi < lo, "higher realized vol must scale exposure DOWN"
+
+    def test_t1_no_lookahead(self):
+        """Scalar for the last bar must not depend on that bar's own return."""
+        from backtester.vol_target import compute_vol_scalar
+        q = self._qqq("low")
+        base = compute_vol_scalar(q, target_annual_vol=0.55, t1=True).iloc[-1]
+        q2 = q.copy()
+        q2.iloc[-1, 0] = q2.iloc[-1, 0] * 1.5   # shock the LAST close
+        shocked = compute_vol_scalar(q2, target_annual_vol=0.55, t1=True).iloc[-1]
+        assert base == pytest.approx(shocked), "T-1 scalar must ignore the current bar"
+
+    def test_target_pct_scaled_by_vol_scalar(self):
+        from paper_trade import compute_target_pct
+        base = {"weight_a": 0.9, "weight_b": 0.1, "exposure_a": 0.8, "exposure_b": 0.5}
+        scaled = {**base, "vol_scalar": 0.5}
+        assert compute_target_pct(scaled) == pytest.approx(compute_target_pct(base) * 0.5)
+
+    def test_vol_scalar_absent_is_no_op(self):
+        from paper_trade import compute_target_pct
+        from ibkr.position_reconciler import PositionReconciler
+        sig = {"weight_a": 0.9, "weight_b": 0.1, "exposure_a": 0.8, "exposure_b": 0.5}
+        # no vol_scalar key → treated as 1.0 in both executors
+        assert compute_target_pct(sig) == pytest.approx(0.9 * 0.8 + 0.1 * 0.5)
+        assert PositionReconciler.compute_blended_target_pct(sig) == pytest.approx(0.9 * 0.8 + 0.1 * 0.5)
+
+    def test_config_default_off(self):
+        """The locked baseline must ship with the overlay disabled."""
+        from config.strategy_config import VOL_TARGET_CONFIG
+        assert VOL_TARGET_CONFIG["enabled"] is False
+
+
 def _tiny_data():
     """Minimal valid OHLCV frames so the constructor's data guard passes."""
     import pandas as pd

@@ -81,3 +81,6 @@ logs/phase4_run.log
 # Admin Panel runtime state — local only; committing would change the baseline
 config/overrides.json
 logs/config_audit.log
+
+# launcher runtime log (must not block git pull on next launch)
+logs/dashboard.log

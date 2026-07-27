@@ -40,13 +40,34 @@ if ! "$PY" -c "import dash, dash_bootstrap_components, plotly, pandas" 2>/dev/nu
 fi
 echo -e "  ${GREEN}✓${NC} dependencies"
 
-# ── 3. Latest committed data (non-fatal) ─────────────────────────────────────
+# ── 3. Sync latest committed run data from GitHub (signals, trades, portfolio) ─
+# The daily GitHub Actions runs COMMIT signal_history.csv / paper_portfolio.json /
+# paper_trades.csv. A fast-forward pull brings all of them in. Untracked files
+# (like this launcher's own log) do NOT block --ff-only, so we always try it.
 if command -v git >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
-  if [ -z "$(git status --porcelain 2>/dev/null)" ]; then
-    git pull --ff-only >/dev/null 2>&1 && echo -e "  ${GREEN}✓${NC} pulled latest data" \
-      || echo -e "  ${DIM}· skipped git pull (offline or diverged) — using local data${NC}"
+  git fetch --quiet origin 2>/dev/null
+  BEHIND=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
+  if git pull --ff-only --quiet 2>/dev/null; then
+    if [ "${BEHIND:-0}" -gt 0 ]; then
+      echo -e "  ${GREEN}✓${NC} synced ${BEHIND} new commit(s) from GitHub (past runs)"
+    else
+      echo -e "  ${GREEN}✓${NC} already up to date with GitHub"
+    fi
   else
-    echo -e "  ${DIM}· local changes present — skipping git pull${NC}"
+    echo -e "  ${AMBER}!${NC} could not fast-forward (offline, or local edits to tracked files)."
+    echo -e "     ${DIM}Showing local data. To force-sync:  git stash && git pull${NC}"
+  fi
+fi
+
+# ── 3b. Refresh market prices so charts & unrealized P/L are current ──────────
+# Prices (data/processed) are NOT committed by the runs, so refresh them here.
+# Non-fatal: offline ⇒ use cached data. Set SKIP_REFRESH=1 to skip for speed.
+if [ "${SKIP_REFRESH:-0}" != "1" ]; then
+  echo -e "  ${DIM}· refreshing market prices (a few seconds)…${NC}"
+  if PYTHONPATH="$PROJECT" "$PY" data/fetch_data.py >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} prices up to date"
+  else
+    echo -e "  ${DIM}· price refresh skipped (offline) — using cached prices${NC}"
   fi
 fi
 

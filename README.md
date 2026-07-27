@@ -232,17 +232,23 @@ python3 -c "import pandas as pd; print(pd.read_csv('logs/paper_trades.csv').to_s
 
 ## Run the Dashboard Locally
 
-The dashboard is a Dash (Python + Plotly) web app showing the full backtest equity curve, live signal history, portfolio analytics, and risk metrics.
+The dashboard is a Dash (Python + Plotly) web app with two tabs:
+- **📊 Monitor** — live paper-simulation account (NLV, positions, realized/unrealized P/L, trade history), status (Running/Paused/Halted), system health, recent logs, plus the strategy backtest curve, signals, and risk analytics. **Auto-refreshes every 60s** — no manual reload.
+- **⚙ Admin** — management & testing (localhost only): edit strategy parameters (validated & bounded — the locked baseline is preserved), Start/Stop (kill switch), Reset paper account, Run backtest, export data. **No live-trading control** (Phase 5 not built).
 
-### Launch
+### Easiest: double-click launcher (macOS)
+
+Double-click **`Trading Dashboard.command`** in the project folder. It verifies Python + dependencies, starts the server, and opens your browser automatically — with plain-language errors if anything is missing.
+
+> Tip: to launch from your Desktop, right-click `Trading Dashboard.command` → *Make Alias*, then drag the alias to your Desktop. Double-click the alias any time.
+
+### Or from the terminal
 
 ```bash
-bash scripts/dashboard_run.sh
+bash scripts/dashboard_run.sh          # or:  PYTHONPATH=. python3 -m dashboard.app
 ```
 
-Then open **http://127.0.0.1:8050** in your browser.
-
-**Reload the page** to refresh all data — the dashboard reads files on each page load, no polling.
+Then open **http://127.0.0.1:8050**. The page auto-refreshes; no manual reload needed.
 
 ### Launch with data refresh first
 

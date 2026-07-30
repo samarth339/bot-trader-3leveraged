@@ -91,7 +91,10 @@ RISK_CONFIG = {
 # baseline. Promote to enabled ONLY after an honest in- + out-of-sample
 # backtest shows it improves risk-adjusted return, and with owner sign-off.
 VOL_TARGET_CONFIG = {
-    "enabled":           False,   # locked baseline is unchanged while False
+    "enabled":           True,    # ENABLED 2026-07-29 (owner-authorized) at 55%
+                                  # after the baseline test window. Backtest A/B
+                                  # showed Calmar↑ and MaxDD↓ in all periods incl.
+                                  # OOS (34.8→30.4%). Live from the 2026-07-29 reset.
     "target_annual_vol": 0.55,    # target annualized portfolio vol (55%)
     "lookback":          20,      # trading days for realized-vol estimate
     "leverage":          3.0,     # TQQQ ≈ 3x QQQ (realized-vol proxy multiplier)

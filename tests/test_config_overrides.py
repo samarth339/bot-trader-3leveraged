@@ -33,17 +33,18 @@ def test_save_is_all_or_nothing(ov):
 
 def test_apply_and_reset_roundtrip(ov, monkeypatch):
     import config.strategy_config as SC
-    ov.save({"A.max_position_pct": 0.80, "VOLTGT.enabled": 1})
-    # reload strategy_config with the patched overrides path
+    # Override AWAY from the current baseline (max_pos 0.85→0.80, overlay ON→OFF)
+    # so the round-trip proves the override actually changes the value.
+    ov.save({"A.max_position_pct": 0.80, "VOLTGT.enabled": 0})
     monkeypatch.setattr("config.overrides.OVERRIDES_PATH", ov.OVERRIDES_PATH)
     importlib.reload(SC)
     assert SC.STRATEGY_A_CONFIG["max_position_pct"] == 0.80
-    assert SC.VOL_TARGET_CONFIG["enabled"] is True
-    # clear → baseline restored on reload
+    assert not SC.VOL_TARGET_CONFIG["enabled"]
+    # clear → baseline restored on reload (overlay ON @ 55%)
     ov.clear()
     importlib.reload(SC)
     assert SC.STRATEGY_A_CONFIG["max_position_pct"] == 0.85
-    assert SC.VOL_TARGET_CONFIG["enabled"] is False
+    assert SC.VOL_TARGET_CONFIG["enabled"] is True
 
 
 def test_baseline_untouched_when_no_overrides(ov):

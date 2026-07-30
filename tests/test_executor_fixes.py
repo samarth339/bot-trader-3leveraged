@@ -443,10 +443,12 @@ class TestVolTargetOverlay:
         assert compute_target_pct(sig) == pytest.approx(0.9 * 0.8 + 0.1 * 0.5)
         assert PositionReconciler.compute_blended_target_pct(sig) == pytest.approx(0.9 * 0.8 + 0.1 * 0.5)
 
-    def test_config_default_off(self):
-        """The locked baseline must ship with the overlay disabled."""
+    def test_config_enabled_state(self):
+        """Guards the deliberate overlay config (enabled 2026-07-29 @ 55%).
+        Change this test only alongside an intentional config change."""
         from config.strategy_config import VOL_TARGET_CONFIG
-        assert VOL_TARGET_CONFIG["enabled"] is False
+        assert VOL_TARGET_CONFIG["enabled"] is True
+        assert VOL_TARGET_CONFIG["target_annual_vol"] == 0.55
 
 
 def _tiny_data():

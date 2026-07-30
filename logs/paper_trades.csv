@@ -1,1 +1,2 @@
 date,regime,action,status,tqqq_shares_before,delta_shares,tqqq_shares_after,fill_price,slippage_bps,cash_before,cash_after,nlv_before,nlv_after,target_pct,actual_pct,gap_guard,notes
+2026-07-30,uncertain,REDUCE_A,executed,0,85,85,63.0029,10,10000.0,4644.75,10000.0,9994.65,53.64,53.64,False,BUY 85 TQQQ (0.0% → 53.6%)

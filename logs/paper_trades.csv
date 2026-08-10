@@ -6,3 +6,4 @@ date,regime,action,status,tqqq_shares_before,delta_shares,tqqq_shares_after,fill
 2026-08-05,bull,HOLD,no_action,92,0,92,,0,4134.17,4134.17,10835.45,10835.45,62.73,61.85,False,Within drift tolerance (0.9% < 5.0%)
 2026-08-07,bull,HOLD,no_action,92,0,92,,0,4134.17,4134.17,10760.93,10760.93,56.77,61.58,False,Within drift tolerance (4.8% < 5.0%)
 2026-08-07,bull,HOLD,executed,92,-9,83,74.3955,10,4134.17,4803.73,10985.41,10984.74,56.77,56.77,False,SELL 9 TQQQ (62.4% → 56.8%)
+2026-08-10,bull,HOLD,no_action,83,0,83,,0,4803.73,4803.73,10929.13,10929.13,58.47,56.05,False,Within drift tolerance (2.4% < 5.0%)

@@ -443,6 +443,27 @@ class TestVolTargetOverlay:
         assert compute_target_pct(sig) == pytest.approx(0.9 * 0.8 + 0.1 * 0.5)
         assert PositionReconciler.compute_blended_target_pct(sig) == pytest.approx(0.9 * 0.8 + 0.1 * 0.5)
 
+    def test_deadband_cuts_scalar_changes(self):
+        """The rebalance deadband must materially reduce scalar changes (churn)
+        while staying deterministic."""
+        from backtester.vol_target import compute_vol_scalar
+        q = self._qqq("high")   # volatile → continuous scalar changes a lot
+        cont = compute_vol_scalar(q, target_annual_vol=0.55, rebalance_band=0.0)
+        band = compute_vol_scalar(q, target_annual_vol=0.55, rebalance_band=0.12)
+        n_cont = int((cont.diff().abs() > 1e-9).sum())
+        n_band = int((band.diff().abs() > 1e-9).sum())
+        assert n_band < n_cont, "deadband must reduce scalar changes"
+        # determinism
+        assert band.equals(compute_vol_scalar(q, target_annual_vol=0.55, rebalance_band=0.12))
+
+    def test_deadband_holds_until_breached(self):
+        from backtester.vol_target import apply_deadband
+        import pandas as pd
+        raw = pd.Series([1.0, 0.95, 0.90, 0.70, 0.68])   # band 0.12
+        held = apply_deadband(raw, 0.12)
+        # 0.95, 0.90 within 0.12 of 1.0 → hold 1.0; 0.70 breaches → snap; 0.68 holds
+        assert list(held) == [1.0, 1.0, 1.0, 0.70, 0.70]
+
     def test_config_enabled_state(self):
         """Guards the deliberate overlay config (enabled 2026-07-29 @ 55%).
         Change this test only alongside an intentional config change."""

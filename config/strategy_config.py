@@ -100,6 +100,9 @@ VOL_TARGET_CONFIG = {
     "leverage":          3.0,     # TQQQ ≈ 3x QQQ (realized-vol proxy multiplier)
     "floor":             0.0,     # min exposure scalar
     "cap":               1.0,     # max scalar (never lever ABOVE the blended target)
+    "rebalance_band":    0.12,    # deadband: hold the applied scalar until realized
+                                  # vol moves it by ≥ this. Stops small vol wiggles
+                                  # from churning the position (3x-decay rule). 0 = off.
 }
 
 # ── Apply validated runtime overrides (Admin Panel) ────────────────────────

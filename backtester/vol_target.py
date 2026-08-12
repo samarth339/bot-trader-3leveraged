@@ -36,6 +36,7 @@ def compute_vol_scalar(
     floor: float = None,
     cap: float = None,
     t1: bool = True,
+    rebalance_band: float = None,
 ) -> pd.Series:
     """
     Return a pd.Series (indexed like qqq) of exposure scalars in [floor, cap].
@@ -63,8 +64,29 @@ def compute_vol_scalar(
     scalar = scalar.clip(lower=flo, upper=ceil)
     # Warm-up (insufficient history) → cap (do not de-risk on missing data)
     scalar = scalar.fillna(ceil)
+
+    band = cfg["rebalance_band"] if rebalance_band is None else rebalance_band
+    if band and band > 0:
+        scalar = apply_deadband(scalar, band)
+
     scalar.name = "vol_scalar"
     return scalar
+
+
+def apply_deadband(scalar: pd.Series, band: float) -> pd.Series:
+    """
+    Hold the applied scalar until the raw scalar moves by ≥ `band`, then snap to
+    the new value. Deterministic single pass over history, so live (recomputed
+    each day from full history) and backtest stay identical. Cuts rebalancing
+    churn from small volatility wiggles without adding persisted state.
+    """
+    held = None
+    out = []
+    for v in scalar.to_numpy():
+        if held is None or abs(v - held) >= band:
+            held = v
+        out.append(held)
+    return pd.Series(out, index=scalar.index, name=scalar.name)
 
 
 def latest_scalar(qqq: pd.DataFrame, as_of: pd.Timestamp = None, **kwargs) -> float:

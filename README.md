@@ -66,7 +66,7 @@ Every weekday at 4:00 PM ET (GitHub Actions, after market close):
 | Phase 3 shadow mode | ✅ Complete — 42 days observed |
 | Phase 4 paper trading | 🔄 Active — **SIMULATION only** (`paper_trade.py` on GitHub Actions, NOT connected to IBKR) |
 | Sim account | $10,000 seed · state in `logs/paper_portfolio.json` · reset 2026-07-10 |
-| Real IBKR paper acct | `DUP540674` — untouched by the bot (Phase 5 / `ibkr/executor.py` only) |
+| Real IBKR paper acct | `DUR914009` — untouched by the bot (Phase 5 / `ibkr/executor.py` only) |
 
 ---
 

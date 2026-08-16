@@ -8,7 +8,7 @@ A systematic trading bot trading **TQQQ** (3x long NASDAQ) and **SQQQ** (3x shor
 using **QQQ** as the clean signal source. Currently in **Phase 4 paper trading, which is a
 SIMULATION** — `paper_trade.py` runs on GitHub Actions, prices come from yfinance, and all
 state lives in git-committed JSON (`logs/paper_portfolio.json`). **It does NOT connect to
-IBKR** — no IB Gateway, no credentials, no orders. The real IBKR paper account (`DUP540674`)
+IBKR** — no IB Gateway, no credentials, no orders. The real IBKR paper account (`DUR914009`)
 is untouched by the bot and only becomes relevant in **Phase 5** (`ibkr/executor.py`, not yet
 active). Goal: $775K+ from $5K seed over ~10 years. **Real money is not yet at risk; treat
 every step toward it (Phase 5, live trading) as requiring explicit human authorization.**
@@ -244,7 +244,7 @@ python3 stress_test_robustness.py --no-chart
 | Shadow regime summary | 10 days high_vol → 5 days uncertain → 27 days bull (Apr–May 2026) |
 | **Phase 4: Paper Trading (SIMULATION)** | 🔄 **ACTIVE** — GitHub Actions, `paper_trade.py`, NOT connected to IBKR |
 | Sim account | `logs/paper_portfolio.json` · reset to $10,000 on 2026-07-10 (fresh start, fixes live) |
-| Real IBKR paper acct | `DUP540674` — untouched by the bot; only used in Phase 5 (`ibkr/executor.py`) |
+| Real IBKR paper acct | `DUR914009` — untouched by the bot; only used in Phase 5 (`ibkr/executor.py`) |
 | Scheduled tasks | GitHub Actions: daily-signal (~3:30 PM ET), paper-trade (~4:00 PM ET), CI (weekly) |
 | **Next action** | Observe fixed system in the simulation through a real volatility event before scoping Phase 5 |
 

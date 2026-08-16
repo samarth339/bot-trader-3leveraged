@@ -211,12 +211,18 @@ class IBClient:
     def _on_error(self, req_id: int, error_code: int, error_string: str, contract):
         # IBKR sends informational messages as "errors" — filter them
         INFO_CODES = {
-            2104,   # Market data farm connection OK
-            2106,   # HMDS data farm connection OK
-            2108,   # Market data farm connection inactive
-            2119,   # Market data farm is connecting
-            2158,   # Sec-def data farm connection OK
             2100,   # Account information update
+            2103,   # Market data farm connection broken
+            2104,   # Market data farm connection OK
+            2105,   # HMDS data farm connection broken
+            2106,   # HMDS data farm connection OK
+            2107,   # HMDS data farm inactive but available on demand
+            2108,   # Market data farm connection inactive
+            2110,   # Connectivity between TWS and server broken
+            2119,   # Market data farm is connecting
+            2137,   # Cross-side warning
+            2157,   # Sec-def data farm connection broken
+            2158,   # Sec-def data farm connection OK
         }
         if error_code in INFO_CODES:
             logger.debug(f"IB info [{error_code}]: {error_string}")

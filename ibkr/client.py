@@ -20,7 +20,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-from ib_insync import IB, util
+from ib_insync import IB
 
 logger = logging.getLogger("ibkr.client")
 
@@ -45,6 +45,12 @@ class ConnectionConfig:
     client_id: int   = 11           # 10=live bot, 11=paper bot
     paper:     bool  = True
     timeout:   float = 20.0         # seconds for connect()
+    # The daily executor connects → works → disconnects in seconds, so it needs
+    # NO heartbeat. The background heartbeat calls ib_insync from a separate
+    # thread, and ib_insync is NOT thread-safe — leaving it off avoids corrupting
+    # the connection. Only enable for a genuinely long-lived connection, and even
+    # then the ping must run on the event-loop thread.
+    enable_heartbeat: bool = False
 
 
 class IBClient:
@@ -119,9 +125,10 @@ class IBClient:
                     f"clientId={self.config.client_id}  "
                     f"{'PAPER' if self.config.paper else 'LIVE'}"
                 )
-                # ib_insync needs an event loop; startLoop() is safe to call
-                # multiple times — it's a no-op if already running
-                util.startLoop()
+                # NOTE: do NOT call util.startLoop() here — that patches the loop
+                # with nest_asyncio for Jupyter/interactive use and causes
+                # event-loop conflicts in a headless script. ib_insync's
+                # synchronous connect() manages its own loop under util.run().
                 self.ib.connect(
                     host=self.config.host,
                     port=self.config.port,
@@ -132,7 +139,8 @@ class IBClient:
                 # serverVersion lives on ib.client in ib_insync 0.9.x
                 sv = self.ib.client.serverVersion()
                 self._connected = True
-                self._start_heartbeat()
+                if self.config.enable_heartbeat:
+                    self._start_heartbeat()
                 logger.info(
                     f"Connected ✓  serverVersion={sv}  "
                     f"account={self.ib.wrapper.accounts}"
@@ -161,7 +169,11 @@ class IBClient:
     def is_connected(self) -> bool:
         return self.ib.isConnected()
 
-    # ── Heartbeat ──────────────────────────────────────────────────────────────
+    # ── Heartbeat (opt-in only — see ConnectionConfig.enable_heartbeat) ─────────
+    # WARNING: this pings IB from a background thread. ib_insync is single-
+    # threaded/asyncio and NOT thread-safe; a proper long-lived implementation
+    # must schedule the ping on the event loop (e.g. ib.schedule / run_coroutine
+    # _threadsafe). The daily batch executor does not use this.
     def _start_heartbeat(self):
         self._stop_heartbeat.clear()
         self._heartbeat_thread = threading.Thread(

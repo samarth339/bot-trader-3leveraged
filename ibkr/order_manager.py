@@ -110,7 +110,7 @@ class OrderManager:
 
         # ── Choose order type ─────────────────────────────────────────────────
         now_est    = datetime.now(EST).time()
-        order_type = "MOC" if now_est <= MOC_CUTOFF else "LMT"
+        order_type = "MOC" if now_est <= MOC_CUTOFF else "LOC"
 
         # ── Build contract ────────────────────────────────────────────────────
         contract = Stock(symbol="TQQQ", exchange="SMART", currency="USD")
@@ -132,7 +132,10 @@ class OrderManager:
             )
 
         else:
-            # Limit-close: add slippage buffer so we participate in the auction
+            # Limit-on-Close (LOC): a limit order that executes only in the
+            # closing auction. NOTE: this must be orderType="LOC" with tif="DAY"
+            # — a plain LMT with tif="MOC" is invalid ("MOC" is not a valid TIF)
+            # and IBKR rejects it. Add a slippage buffer so we still fill.
             slippage_factor = SLIPPAGE_BPS / 10_000
             if direction == "BUY":
                 limit_price = round(plan.tqqq_price * (1 + slippage_factor), 2)
@@ -141,15 +144,15 @@ class OrderManager:
 
             ibkr_order = Order(
                 action        = direction,
-                orderType     = "LMT",
+                orderType     = "LOC",    # Limit-on-Close
                 totalQuantity = quantity,
                 lmtPrice      = limit_price,
-                tif           = "MOC",    # closing auction only
+                tif           = "DAY",
                 outsideRth    = False,
             )
             logger.info(
-                f"Order: {direction} {quantity} TQQQ via LMT @ ${limit_price:.2f} "
-                f"tif=MOC (past MOC cutoff — using limit-close fallback)"
+                f"Order: {direction} {quantity} TQQQ via LOC @ ${limit_price:.2f} "
+                f"(past MOC cutoff — using limit-on-close fallback)"
             )
 
         # ── Dry run ───────────────────────────────────────────────────────────

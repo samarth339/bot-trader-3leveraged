@@ -68,11 +68,24 @@ class AccountManager:
         state = AccountState()
 
         # ── Account summary ────────────────────────────────────────────────
+        # Right after connect, ib_insync may not have received the account data
+        # yet, so accountSummary() can return empty briefly. Request it and
+        # retry with a short settle wait before treating "empty" as an error.
         summary = self.ib.accountSummary()
         if not summary:
+            try:
+                self.ib.reqAccountSummary()
+            except Exception as exc:
+                logger.debug(f"reqAccountSummary() call: {exc}")
+            for _ in range(10):          # up to ~5s for data to arrive
+                self.ib.sleep(0.5)
+                summary = self.ib.accountSummary()
+                if summary:
+                    break
+        if not summary:
             raise RuntimeError(
-                "accountSummary() returned empty — is the Gateway connected "
-                "and the account subscribed?"
+                "accountSummary() returned empty after settle wait — is the "
+                "Gateway connected and the account subscribed?"
             )
 
         tag_map = {av.tag: av.value for av in summary}

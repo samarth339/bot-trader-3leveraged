@@ -139,8 +139,14 @@ class PositionReconciler:
                 if isinstance(data.columns, pd.MultiIndex):
                     data = data.droplevel(1, axis=1)
                 price = float(data["Close"].iloc[-1])
-                logger.info(f"Live TQQQ price: ${price:.2f}")
-                return price
+                # FAIL-SAFE: never size a REAL order on a NaN/invalid price.
+                # (Same class of bug that produced a phantom full-liquidation in
+                # the sim on 2026-09-28 — here it would place a real order.)
+                if price != price or price <= 0:   # price != price ⇒ NaN
+                    logger.warning(f"Live TQQQ price invalid ({price}) — ignoring this fetch")
+                else:
+                    logger.info(f"Live TQQQ price: ${price:.2f}")
+                    return price
         except Exception as exc:
             logger.warning(f"yfinance TQQQ fetch failed: {exc}")
 

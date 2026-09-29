@@ -164,6 +164,14 @@ def fetch_recent_closes(ticker: str, n: int = 2) -> list:
         if data.empty:
             return []
         closes = [float(c) for c in data["Close"].iloc[-n:]]
+        # FAIL-SAFE: reject NaN / non-positive prices. A bad yfinance bar (empty
+        # or NaN Close) must NEVER drive sizing — on 2026-09-28 a NaN price
+        # produced a phantom "sell all shares @ $nan" plan. Treat as no-data so
+        # the caller aborts instead of trading on garbage.
+        closes = [c for c in closes if c == c and c > 0]   # c==c filters NaN
+        if not closes:
+            logger.warning(f"{ticker}: fetched closes were NaN/invalid — treating as unavailable")
+            return []
         logger.info(f"Recent closes {ticker}: " + "  ".join(f"${c:.2f}" for c in closes))
         return closes
     except Exception as exc:

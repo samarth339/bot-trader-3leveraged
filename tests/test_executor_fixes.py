@@ -480,3 +480,31 @@ def _tiny_data():
                           "close": 100.0, "volume": 1_000}, index=idx)
     vix = pd.DataFrame({"close": 16.0}, index=idx)
     return ohlcv.copy(), ohlcv.copy(), ohlcv.copy(), vix
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  10. NaN-price fail-safe (2026-09-28 incident)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestNaNPriceFailSafe:
+    def test_fetch_rejects_all_nan(self, monkeypatch):
+        import paper_trade, pandas as pd, numpy as np
+        df = pd.DataFrame({"Close": [np.nan, np.nan]},
+                          index=pd.date_range("2026-09-27", periods=2))
+        monkeypatch.setattr(paper_trade.yf, "download", lambda *a, **k: df)
+        # a NaN feed must look like "no data" so run() aborts instead of trading
+        assert paper_trade.fetch_recent_closes("TQQQ", n=2) == []
+
+    def test_fetch_drops_nan_keeps_valid(self, monkeypatch):
+        import paper_trade, pandas as pd, numpy as np
+        df = pd.DataFrame({"Close": [np.nan, 84.5]},
+                          index=pd.date_range("2026-09-27", periods=2))
+        monkeypatch.setattr(paper_trade.yf, "download", lambda *a, **k: df)
+        assert paper_trade.fetch_recent_closes("TQQQ", n=2) == [84.5]
+
+    def test_fetch_rejects_nonpositive(self, monkeypatch):
+        import paper_trade, pandas as pd
+        df = pd.DataFrame({"Close": [0.0, -1.0]},
+                          index=pd.date_range("2026-09-27", periods=2))
+        monkeypatch.setattr(paper_trade.yf, "download", lambda *a, **k: df)
+        assert paper_trade.fetch_recent_closes("TQQQ", n=2) == []

@@ -113,6 +113,14 @@ jobs:
               str(action).lower(), "⚙️"
           )
 
+          def _money(x):
+              # robust: empty string / None / NaN → "—" instead of crashing the job
+              try:
+                  v = float(x)
+                  return "—" if v != v else f"${v:,.2f}"
+              except (TypeError, ValueError):
+                  return "—"
+
           lines = [
               f"## {emoji_act} Paper Trade — {latest_trade.get('date','—')}",
               "",
@@ -122,7 +130,7 @@ jobs:
               f"| Status | `{status}` |",
               f"| Action | `{action}` |",
               f"| Shares delta | {delta} TQQQ |",
-              f"| Fill price | ${float(fill):.2f} |" if fill not in ("—","") else "| Fill price | — |",
+              f"| Fill price | {_money(fill)} |",
               f"| Slippage | {slip} bps |",
               "",
               "### Paper Portfolio ($10K seed)",
@@ -141,14 +149,12 @@ jobs:
               "|---|---|---|---|---|",
           ]
           for r in trade_rows[-7:]:
-              fp = r.get("fill_price","—")
-              fp_str = f"${float(fp):.2f}" if fp not in ("—","") else "—"
               lines.append(
                   f"| {r.get('date','—')} "
                   f"| {r.get('action','—')} "
                   f"| {r.get('delta_shares','—')} "
-                  f"| {fp_str} "
-                  f"| ${float(r.get('nlv_after',0)):,.2f} |"
+                  f"| {_money(r.get('fill_price'))} "
+                  f"| {_money(r.get('nlv_after'))} |"
               )
 
           with open(summary, "a") as f:

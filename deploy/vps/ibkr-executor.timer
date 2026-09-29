@@ -1,0 +1,8 @@
+[Unit]
+Description=Fire the IBKR executor at 15:45 America/New_York (MOC window)
+[Timer]
+OnCalendar=Mon..Fri 15:45 America/New_York   # systemd handles DST automatically
+Persistent=false
+AccuracySec=30s
+[Install]
+WantedBy=timers.target

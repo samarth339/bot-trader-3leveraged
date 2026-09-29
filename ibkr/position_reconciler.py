@@ -37,6 +37,7 @@ import pandas as pd
 import yfinance as yf
 
 from config.strategy_config import STRATEGY_A_CONFIG, STRATEGY_B_CONFIG, RISK_CONFIG
+from .pricing import is_valid_price
 from .account import AccountState
 
 logger = logging.getLogger("ibkr.reconciler")
@@ -142,7 +143,7 @@ class PositionReconciler:
                 # FAIL-SAFE: never size a REAL order on a NaN/invalid price.
                 # (Same class of bug that produced a phantom full-liquidation in
                 # the sim on 2026-09-28 — here it would place a real order.)
-                if price != price or price <= 0:   # price != price ⇒ NaN
+                if not is_valid_price(price):
                     logger.warning(f"Live TQQQ price invalid ({price}) — ignoring this fetch")
                 else:
                     logger.info(f"Live TQQQ price: ${price:.2f}")

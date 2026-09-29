@@ -1,0 +1,12 @@
+[Unit]
+Description=TQQQ bot — IBKR paper executor (MOC window)
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/bot-trader-3leveraged
+EnvironmentFile=/opt/bot-trader-3leveraged/.env           # GMAIL_* etc (chmod 600)
+# refresh data + generate today's signal, then execute against local Gateway
+ExecStartPre=/usr/bin/python3 data/fetch_data.py
+ExecStartPre=/usr/bin/python3 daily_signal.py
+ExecStart=/usr/bin/python3 -m ibkr.executor --paper

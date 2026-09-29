@@ -1,0 +1,22 @@
+name: Run Watchdog (best-effort)
+# Alerts if a scheduled daily-signal/paper-trade run went missing. GitHub cron is
+# itself delay-prone, so this runs late and uses the 1-day grace (non-strict).
+on:
+  schedule:
+    - cron: "0 3 * * 2-6"      # ~11 PM ET, day after each weekday run
+  workflow_dispatch:
+env:
+  PYTHONPATH: ${{ github.workspace }}
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip, cache-dependency-path: requirements-ci.txt }
+      - run: pip install -r requirements-ci.txt
+      - name: Check for missed runs
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python3 scripts/watchdog.py

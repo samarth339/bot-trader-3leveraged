@@ -1,0 +1,7 @@
+[Unit]
+Description=TQQQ bot — missed-run watchdog
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/bot-trader-3leveraged
+EnvironmentFile=/opt/bot-trader-3leveraged/.env
+ExecStart=/usr/bin/python3 scripts/watchdog.py --strict

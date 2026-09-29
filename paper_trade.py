@@ -472,10 +472,26 @@ def compute_plan(
     Compute the rebalancing plan.
     Returns a dict describing the trade to execute (or skip).
     """
+    # A4 — plan sanity gate (defense-in-depth beyond the NaN-price guard).
+    # A garbage price must never reach sizing; if it somehow does, refuse to trade.
+    if not (isinstance(tqqq_price, (int, float)) and math.isfinite(tqqq_price) and tqqq_price > 0):
+        logger.error(f"Plan sanity: invalid tqqq_price ({tqqq_price}) — refusing to trade")
+        return {"proceed": False, "status": "blocked",
+                "reason": f"invalid price {tqqq_price}", "delta_shares": 0,
+                "target_shares": portfolio["tqqq_shares"], "current_shares": portfolio["tqqq_shares"],
+                "target_pct": 0.0, "current_pct": 0.0, "nlv": portfolio.get("nlv", 0.0)}
     current_shares = portfolio["tqqq_shares"]
     cash           = portfolio["cash"]
     nlv            = current_shares * tqqq_price + cash
     target_pct     = compute_target_pct(signal)
+    # A4 — bound the target: valid allocations are 0%..~100% of NLV. A value
+    # outside this is a computation error, not a legitimate plan → refuse.
+    if not (math.isfinite(target_pct) and 0.0 <= target_pct <= 1.05):
+        logger.error(f"Plan sanity: target_pct {target_pct} out of [0,1.05] — refusing to trade")
+        return {"proceed": False, "status": "blocked",
+                "reason": f"target_pct {target_pct} out of bounds", "delta_shares": 0,
+                "target_shares": current_shares, "current_shares": current_shares,
+                "target_pct": 0.0, "current_pct": 0.0, "nlv": nlv}
     target_value   = nlv * target_pct
     target_shares  = math.floor(target_value / tqqq_price) if tqqq_price > 0 else 0
     current_pct    = (current_shares * tqqq_price) / nlv if nlv > 0 else 0.0

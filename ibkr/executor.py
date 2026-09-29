@@ -227,6 +227,35 @@ def run(paper: bool = True, dry_run: bool = False) -> bool:
         elif order_result.status == "error":
             logger.error(f"Order error: {order_result.error}")
 
+        # ── Step 8b: Post-fill reconciliation (A5) ─────────────────────────────
+        # After a REAL order, re-read the account and verify it matches intent.
+        # Catches partial fills, rejects, wrong quantity, or a bad fill price —
+        # the things that silently corrupt a real book. Alert loudly on mismatch.
+        if not dry_run and order_result.status not in ("no_action", "dry_run", "error"):
+            try:
+                after = account_mgr.refresh()
+                actual = after.tqqq_shares()
+                intended = plan.target_shares
+                share_gap = abs(actual - intended)
+                fp = order_result.fill_price
+                px_dev = (abs(fp - plan.tqqq_price) / plan.tqqq_price
+                          if (fp and plan.tqqq_price) else 0.0)
+                problems = []
+                if share_gap > 1:                       # >1 share off target
+                    problems.append(f"position {actual} sh vs intended {intended} (Δ{share_gap})")
+                if px_dev > 0.03:                        # fill >3% off reference
+                    problems.append(f"fill ${fp:.2f} is {px_dev:.1%} off ref ${plan.tqqq_price:.2f}")
+                if problems:
+                    msg = "POST-FILL RECONCILIATION MISMATCH — " + "; ".join(problems)
+                    logger.error(msg)
+                    _send_alert(subject=f"[{env}] ⚠ RECONCILIATION MISMATCH", body=msg)
+                else:
+                    logger.info(f"Post-fill reconciliation OK: {actual} sh matches intent")
+            except Exception as exc:
+                logger.error(f"Post-fill reconciliation could not run: {exc}")
+                _send_alert(subject=f"[{env}] ⚠ reconciliation check failed",
+                            body=f"Could not verify the fill against the account: {exc}")
+
         # ── Step 9: Log summary ────────────────────────────────────────────────
         _log_summary(plan, order_result, account, signal, env, dry_run)
 

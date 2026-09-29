@@ -47,6 +47,7 @@ import yfinance as yf
 from config.strategy_config import RISK_CONFIG, STRATEGY_A_CONFIG, STRATEGY_B_CONFIG
 from .account import AccountState
 from .gap_guard import GapGuard
+from .pricing import is_valid_price
 from . import kill_switch
 from . import state as state_module
 
@@ -291,7 +292,8 @@ class SafetyGuard:
                 data = data.droplevel(1, axis=1)
             prev_close = float(data["Close"].iloc[-2])
             last_price = float(data["Close"].iloc[-1])
-            if prev_close <= 0:
+            if not (is_valid_price(prev_close) and is_valid_price(last_price)):
+                logger.warning("Crash-day check skipped: NaN/invalid TQQQ close")
                 return GuardResult(blocked=False)
 
             day_change = (last_price - prev_close) / prev_close
@@ -348,6 +350,9 @@ class SafetyGuard:
             if isinstance(data.columns, pd.MultiIndex):
                 data = data.droplevel(1, axis=1)
             live_vix = float(data["Close"].iloc[-1])
+            if not is_valid_price(live_vix):
+                logger.warning("Live VIX is NaN/invalid — skipping extreme check")
+                return GuardResult(blocked=False)
             logger.info(f"Live VIX: {live_vix:.1f}  (extreme threshold: {VIX_EXTREME})")
 
             if live_vix >= VIX_EXTREME:

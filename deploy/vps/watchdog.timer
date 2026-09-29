@@ -1,0 +1,7 @@
+[Unit]
+Description=Watchdog at 16:30 America/New_York
+[Timer]
+OnCalendar=Mon..Fri 16:30 America/New_York
+AccuracySec=1min
+[Install]
+WantedBy=timers.target

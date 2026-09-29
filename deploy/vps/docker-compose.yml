@@ -1,0 +1,21 @@
+# ibeam auto-logs into IB Gateway headlessly and exposes the API on :4002.
+# Credentials come ONLY from the host environment (never committed):
+#   export IBEAM_ACCOUNT=<paper-user-id>   IBEAM_PASSWORD=<paper-password>
+# Bring up:  docker compose up -d   ·   Logs:  docker compose logs -f ibeam
+services:
+  ibeam:
+    image: voyz/ibeam:latest
+    container_name: ibeam
+    restart: unless-stopped
+    environment:
+      IBEAM_ACCOUNT:  ${IBEAM_ACCOUNT:?set IBEAM_ACCOUNT in the host env}
+      IBEAM_PASSWORD: ${IBEAM_PASSWORD:?set IBEAM_PASSWORD in the host env}
+      IBEAM_GATEWAY_STARTUP: "3"
+      IBEAM_TRADING_MODE: paper        # paper account only
+    ports:
+      - "127.0.0.1:4002:4002"          # bind localhost only — never expose publicly
+    healthcheck:
+      test: ["CMD","curl","-skf","https://localhost:5000/v1/api/one/user","||","exit","1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

@@ -26,6 +26,8 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
+from .pricing import is_valid_price
+
 logger = logging.getLogger("ibkr.gap_guard")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -117,6 +119,9 @@ class GapGuard:
                 return None
 
             price = float(past["close"].iloc[-1])
+            if not is_valid_price(price):
+                logger.warning("Gap guard: prev_close from CSV is NaN/invalid — unavailable")
+                return None
             logger.debug(f"Gap guard: prev_close from CSV = ${price:.2f}  ({past.index[-1].date()})")
             return price
 
@@ -139,6 +144,9 @@ class GapGuard:
             if isinstance(data.columns, pd.MultiIndex):
                 data = data.droplevel(1, axis=1)
             price = float(data["Open"].iloc[0])
+            if not is_valid_price(price):
+                logger.warning("Gap guard: today_open from yfinance is NaN/invalid — unavailable")
+                return None
             logger.debug(f"Gap guard: today_open from yfinance = ${price:.2f}")
             return price
 
